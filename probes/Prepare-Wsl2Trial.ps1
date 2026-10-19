@@ -8,6 +8,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 if ($env:COMPUTERNAME -cne $ExpectedComputerName) { throw 'HOST_IDENTITY_MISMATCH' }
 $root = Join-Path $env:ProgramData 'TrustedExecution-WslTrial'
 $receipt = Join-Path $root 'installation-receipt.json'
@@ -62,7 +63,7 @@ New-Item -ItemType Directory -Path $root | Out-Null
 $r = [ordered]@{host=$ExpectedComputerName;packageSha256=$hash;existingWsl=$false;
     vmpBefore=[string]$feature.State;vmpEnabledByThisTrial=$false;installedByThisTrial=$false}
 Write-Receipt $r
-Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile $msi
+Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 -Uri $url -OutFile $msi
 Assert-Package
 if ($feature.State -eq 'Disabled') {
     $result = Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart

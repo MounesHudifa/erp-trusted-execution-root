@@ -9,6 +9,7 @@ param(
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $PSNativeCommandUseErrorActionPreference = $false
 if ($DeviceTrial) {
     # This switch is NOT authorization. Caller must obtain an exact new adopted
@@ -55,10 +56,13 @@ try {
     }
     if (-not $DeviceTrial) {
     $msi = Join-Path $work 'wsl.3.0.3.0.x64.msi'
-    Invoke-WebRequest 'https://github.com/microsoft/WSL/releases/download/3.0.3/wsl.3.0.3.0.x64.msi' -OutFile $msi
+    Write-Output 'WSL_MSI_DOWNLOAD_START'
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 'https://github.com/microsoft/WSL/releases/download/3.0.3/wsl.3.0.3.0.x64.msi' -OutFile $msi
+    Write-Output 'WSL_MSI_DOWNLOAD_COMPLETE'
     if ((Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ae977286974255bd26bf925f00f40f5692c6b2084155cbc0563c09aea091f211') { throw 'WSL_MSI_DIGEST_MISMATCH' }
     $signature = Get-AuthenticodeSignature $msi
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'WSL_MSI_SIGNATURE_INVALID' }
+    Write-Output 'WSL_MSI_INSTALL_START'
     $install = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/norestart') -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw "PUBLIC_WSL_MSI_FAILED_OR_REBOOT_REQUIRED:$($install.ExitCode)" }
     }
@@ -69,7 +73,9 @@ try {
     $existing = ((& wsl.exe --list --quiet) -join "`n").Replace([string][char]0, '').Trim()
     if ($existing -and $existing -notmatch 'no installed distributions') { throw 'PUBLIC_VM_HAS_OTHER_DISTROS_NO_GLOBAL_CONFIGURATION_CHANGE' }
     $archive = Join-Path $work 'ubuntu-base.tar.gz'
-    Invoke-WebRequest 'https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-amd64.tar.gz' -OutFile $archive
+    Write-Output 'UBUNTU_ROOTFS_DOWNLOAD_START'
+    Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 'https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.3-base-amd64.tar.gz' -OutFile $archive
+    Write-Output 'UBUNTU_ROOTFS_DOWNLOAD_COMPLETE'
     if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '6bc2cde3930ad088b3bb46fa45279e96d25bc3810f209850ecbe4722711874f9') { throw 'ROOTFS_DIGEST_MISMATCH' }
     & wsl.exe --import $distro (Join-Path $work 'distro') $archive --version 2
     if ($LASTEXITCODE -ne 0) { throw 'PUBLIC_WSL2_IMPORT_OR_VIRTUALIZATION_UNAVAILABLE' }
