@@ -2,7 +2,7 @@ name: Trust Root Unit and Adversarial Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, sec02/controller-isolation-validation]
   pull_request:
     branches: [main]
   workflow_dispatch:
