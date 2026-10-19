@@ -37,7 +37,10 @@ jobs:
           TRUSTROOT_PROBE_RUNTIME: ${{ runner.temp }}/trustroot-python-runtime
         run: |
           set -euo pipefail
-          python3 -B - <<'PY'
+          # This disposable public VM contains only generic synthetic tests.
+          # Keep the sandbox network/user namespace protections intact; use
+          # the official runner's existing sudo capability for namespace setup.
+          sudo /usr/bin/env TRUSTROOT_REQUIRE_ISOLATION=1 TRUSTROOT_PROBE_RUNTIME="$TRUSTROOT_PROBE_RUNTIME" /usr/bin/python3 -B - <<'PY'
           import unittest
           suite = unittest.defaultTestLoader.discover('tests')
           result = unittest.TextTestRunner(verbosity=2).run(suite)
