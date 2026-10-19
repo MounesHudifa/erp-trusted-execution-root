@@ -37,9 +37,17 @@ function Invoke-Guest([string]$Script) {
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
     # Fixed UUID-derived distribution name, no shell interpolation from a caller.
-    $start.Arguments = "--distribution $distro --user root --exec /bin/bash --noprofile --norc -s"
-    $process = [Diagnostics.Process]::Start($start)
+    $start.Arguments = "--distribution $distro --user root --exec /bin/bash --noprofile --norc -e -u -s"
+    # .NET Framework constructs StandardInput using Console.InputEncoding and
+    # can emit its BOM before a BaseStream write. Control that process-local
+    # encoding before Start, then restore it; never change system settings.
+    $previousInputEncoding = [Console]::InputEncoding
     try {
+        [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
+        $process = [Diagnostics.Process]::Start($start)
+    } finally { [Console]::InputEncoding = $previousInputEncoding }
+    try {
+        if ($process.StandardInput.Encoding.GetPreamble().Length -ne 0) { throw 'STDIN_BOM_NOT_ALLOWED' }
         $stdinBytes = [Text.UTF8Encoding]::new($false).GetBytes($Script.Replace("`r", '') + "`n")
         $process.StandardInput.BaseStream.Write($stdinBytes, 0, $stdinBytes.Length)
         $process.StandardInput.BaseStream.Close()
@@ -83,6 +91,13 @@ try {
     $inventory = ((& wsl.exe --list --verbose) -join "`n").Replace([string][char]0, '')
     Write-Output $inventory
     if ($inventory -notmatch ([regex]::Escape($distro) + '\s+\S+\s+2')) { throw 'NOT_WSL2' }
+    $propagated = $false
+    try { Invoke-Guest "exit 17`necho MUST_NOT_RUN" } catch {
+        if ($_.Exception.Message -ne 'WSL_GUEST_COMMAND_FAILED:17') { throw }
+        $propagated = $true
+    }
+    if (-not $propagated) { throw 'FIRST_COMMAND_ERROR_NOT_PROPAGATED' }
+    Write-Output 'WSL_STDIN_BOM_AND_FIRST_COMMAND_FAILURE_REGRESSION=PASS'
     Invoke-Guest @'
 set -eu
 export DEBIAN_FRONTEND=noninteractive
