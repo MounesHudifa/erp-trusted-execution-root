@@ -1,0 +1,30 @@
+# EXAMPLE ONLY: to be installed in a separately reviewed private caller Main.
+# Public root must be an existing public repository with enforced branch protection.
+# Replace PUBLIC_OWNER/PUBLIC_REPO and the full 40-hex audited commit SHA.
+# This is a read-only trust gate, NOT a trigger to execute the PR on persistent runners.
+name: Read-only trust admission
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, reopened, synchronize, ready_for_review]
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+jobs:
+  admit:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    uses: PUBLIC_OWNER/PUBLIC_REPO/.github/workflows/trusted-attestation.yml@REPLACE_WITH_AUDITED_40_HEX_COMMIT
+    with:
+      pr_number: ${{ github.event.pull_request.number }}
+      main_sha: ${{ github.event.pull_request.base.sha }}
+      candidate_sha: ${{ github.event.pull_request.head.sha }}
+      control_sha: ${{ vars.CONTROL_SHA }}
+      approval_issue_number: 1
+# IMPORTANT: A GitHub repository variable is NOT a cryptographic source of truth.
+# The verifier rechecks live canonical Control SHA. Prefer a trusted Main-owned
+# resolver for the Control SHA and never accept values supplied by the PR author.

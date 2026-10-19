@@ -1,0 +1,100 @@
+name: Trusted public-root read-only PR attestation
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: Exact private PR number
+        required: true
+        type: number
+      main_sha:
+        description: Exact trusted caller Main SHA
+        required: true
+        type: string
+      candidate_sha:
+        description: Exact candidate SHA, never executable in this workflow
+        required: true
+        type: string
+      control_sha:
+        description: Exact independently read Control SHA
+        required: true
+        type: string
+      approval_issue_number:
+        description: Private issue containing owner-authored approvals
+        required: true
+        type: number
+    outputs:
+      verified_readonly:
+        description: An attestation, never permission to run candidate code
+        value: ${{ jobs.attest.outputs.verified_readonly }}
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: read
+
+jobs:
+  attest:
+    name: Trust-only immutable Git data attestation
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == 'main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      verified_readonly: ${{ steps.verify.outputs.verified_readonly }}
+    steps:
+      - name: Checkout public security-root ONLY at the exact defining workflow SHA
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: ${{ job.workflow_repository }}
+          ref: ${{ job.workflow_sha }}
+          path: public-trust-root
+          persist-credentials: false
+          clean: true
+          fetch-depth: 1
+
+      - name: Verify external public-root source before reading private metadata
+        shell: bash
+        env:
+          VERIFIED_PUBLIC_SHA: ${{ job.workflow_sha }}
+          VERIFIED_PUBLIC_REPO: ${{ job.workflow_repository }}
+        run: |
+          set -euo pipefail
+          [[ "$VERIFIED_PUBLIC_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 2
+          [[ "$VERIFIED_PUBLIC_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || exit 2
+          test "$(git -C public-trust-root rev-parse HEAD)" = "$VERIFIED_PUBLIC_SHA"
+          test -f public-trust-root/trustroot/verify.py
+          test ! -L public-trust-root/trustroot/verify.py
+          test "$(git -C public-trust-root status --porcelain)" = ""
+          python3 -I -B -m py_compile public-trust-root/trustroot/verify.py
+
+      - name: Inspect private candidate only as data using read-only API
+        id: verify
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET_REPOSITORY: ${{ github.repository }}
+          TARGET_PR: ${{ inputs.pr_number }}
+          EXPECTED_MAIN: ${{ inputs.main_sha }}
+          EXPECTED_CANDIDATE: ${{ inputs.candidate_sha }}
+          EXPECTED_CONTROL: ${{ inputs.control_sha }}
+          APPROVAL_ISSUE_NUMBER: ${{ inputs.approval_issue_number }}
+          EVENT_BASE: ${{ github.event.pull_request.base.sha }}
+          EVENT_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          test "$EXPECTED_MAIN" = "$EVENT_BASE"
+          test "$EXPECTED_CANDIDATE" = "$EVENT_HEAD"
+          python3 -I -B public-trust-root/trustroot/verify.py \
+            --repository "$TARGET_REPOSITORY" \
+            --pr-number "$TARGET_PR" \
+            --main-sha "$EXPECTED_MAIN" \
+            --candidate-sha "$EXPECTED_CANDIDATE" \
+            --control-sha "$EXPECTED_CONTROL" \
+            --approval-issue-number "$APPROVAL_ISSUE_NUMBER"
+          echo 'verified_readonly=true' >> "$GITHUB_OUTPUT"
+          echo 'CANDIDATE_CODE_EXECUTED=NO'
+          echo 'EXECUTION_PERMISSION=NONE'
+          echo 'ADOPTION_PERMISSION=NONE'
