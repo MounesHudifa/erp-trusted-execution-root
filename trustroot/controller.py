@@ -236,3 +236,19 @@ def isolated_probe(permit: Permit, source: Mapping[str, bytes], runtime: Path,
                 raise IsolationFailed(process.returncode, raw)
             return {"status": "ISOLATED_PROBE_PASS", "output": raw,
                     "disposableWorkspace": str(staging), "adoptionAllowed": False}
+
+
+def validate_once(api: Callable, *, runtime: Path, timeout: float = 15, **identity) -> dict:
+    """Prototype full admission/stage/re-admission/isolated execution sequence.
+
+    Must remain outside private workflows and candidate-writable paths. This
+    function neither installs the controller nor grants production authority.
+    """
+    permit = admit(api, **identity)
+    source = read_candidate(api, permit)
+    if admit(api, **identity) != permit:
+        raise Denied("EXECUTION_PERMIT_CHANGED_DURING_STAGING")
+    result = isolated_probe(permit, source, runtime, timeout=timeout)
+    if admit(api, **identity) != permit:
+        raise Denied("EXECUTION_PERMIT_CHANGED_BEFORE_RECEIPT")
+    return result

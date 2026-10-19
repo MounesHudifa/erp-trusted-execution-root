@@ -153,10 +153,35 @@ class ControllerTests(unittest.TestCase):
         # bwrap 0.9.0 treats --unshare-all's user namespace as optional;
         # --disable-userns requires an explicit --unshare-user. Do not fix
         # that runtime refusal by dropping the nested-namespace protection.
-        import inspect
-        source = inspect.getsource(c.isolated_probe)
-        self.assertIn('"--unshare-user"', source)
-        self.assertIn('"--disable-userns"', source)
+        from dataclasses import replace
+        root = Path(self.temp.name) / "runtime"
+        root.mkdir()
+        (root / "runtime.txt").write_text("synthetic")
+        files = {"main.py": b"print('synthetic')\n"}
+        permit = replace(self.admit(), runtime_digest=c.runtime_hash(root),
+                         tree=(("main.py", c.blob_hash(files["main.py"])),))
+        with patch.object(c.subprocess, "Popen") as launch:
+            launch.return_value.returncode = 0
+            launch.return_value.poll.return_value = 0
+            c.isolated_probe(permit, files, root)
+        argv = launch.call_args.args[0]
+        self.assertIn("--unshare-user", argv)
+        self.assertIn("--disable-userns", argv)
+        self.assertIn("--unshare-all", argv)
+        self.assertEqual(launch.call_args.kwargs["env"], {})
+        self.assertTrue(launch.call_args.kwargs["close_fds"])
+
+    def test_runtime_bytes_changed_refused_before_process(self):
+        from dataclasses import replace
+        root = Path(self.temp.name) / "runtime"
+        root.mkdir()
+        item = root / "runtime.txt"
+        item.write_text("synthetic")
+        permit = replace(self.admit(), runtime_digest=c.runtime_hash(root))
+        item.write_text("changed")
+        with patch.object(c.subprocess, "Popen", side_effect=AssertionError("must not execute")):
+            with self.assertRaisesRegex(c.Denied, "RUNTIME_IDENTITY_DRIFT"):
+                c.isolated_probe(permit, {}, root)
 
 
 if __name__ == "__main__":

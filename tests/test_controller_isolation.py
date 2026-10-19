@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from trustroot import controller as c
 
@@ -52,7 +53,7 @@ assert ctypes.CDLL(None).unshare(0x10000000) == -1
 pathlib.Path('/work/temporary.txt').write_text('disposable')
 print('HOST_NETWORK_CREDENTIAL_WRITE_DENIAL=PASS')
 '''.replace("HOST_NET", repr(host_net))
-        with unittest.mock.patch.dict(os.environ, {"SYNTHETIC_CONTROLLER_SECRET": "dummy-not-a-secret"}):
+        with patch.dict(os.environ, {"SYNTHETIC_CONTROLLER_SECRET": "dummy-not-a-secret"}):
             result = self.run_source(script)
         self.assertIn(b"DENIAL=PASS", result["output"])
         self.assertFalse(Path(result["disposableWorkspace"]).exists())
@@ -72,3 +73,38 @@ print('HOST_NETWORK_CREDENTIAL_WRITE_DENIAL=PASS')
     def test_actual_candidate_failure_does_not_pass(self):
         with self.assertRaisesRegex(c.Denied, "ISOLATION_OR_CANDIDATE_FAILED"):
             self.run_source("raise SystemExit(17)\n")
+
+    def test_actual_signed_synthetic_admission_and_execution_sequence(self):
+        import base64
+        from test_controller import ControllerTests
+        fixture = ControllerTests()
+        fixture.setUp()
+        try:
+            baseline = b"synthetic baseline\n"
+            payload = b"print('FULL_SYNTHETIC_ADMISSION_AND_ISOLATION=PASS')\n"
+            gh = fixture.gh
+            gh.before = {"README.md": ("100644", c.blob_hash(baseline))}
+            gh.after = dict(gh.before, **{gh.src_path: ("100644", c.blob_hash(payload))})
+            gh.auth["approvedChangedBlobs"] = {gh.src_path: {"mode": "100644", "blob": c.blob_hash(payload)}}
+            gh._approval_comment()
+            fixture.runtime = self.runtime_id
+            fixture.command = ("/usr/bin/python3", "-I", "-B", "/candidate/" + gh.src_path)
+            fixture.execution["runtimeImageSha256"] = self.runtime_id
+            fixture.execution["commandSha256"] = c.digest(list(fixture.command))
+            fixture.sign()
+            original = fixture.api
+            blobs = {c.blob_hash(b): b for b in (baseline, payload)}
+            def api(path):
+                if "/git/blobs/" in path:
+                    key = path.rsplit('/', 1)[1]
+                    return {"sha": key, "encoding": "base64", "content": base64.b64encode(blobs[key]).decode()}
+                return original(path)
+            result = c.validate_once(api, runtime=self.runtime, repository=gh.repo,
+                                     main=gh.main, candidate=gh.candidate, control=gh.control,
+                                     pr=gh.pr_number, issue=gh.approval_issue,
+                                     installed_root_sha=fixture.root, runtime_digest=self.runtime_id,
+                                     command=fixture.command)
+            self.assertIn(b"FULL_SYNTHETIC_ADMISSION_AND_ISOLATION=PASS", result["output"])
+            self.assertFalse(Path(result["disposableWorkspace"]).exists())
+        finally:
+            fixture.doCleanups()

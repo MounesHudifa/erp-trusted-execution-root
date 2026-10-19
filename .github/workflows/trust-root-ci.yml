@@ -29,12 +29,12 @@ jobs:
             sudo apt-get install -y bubblewrap
           fi
           bwrap --version
-          python3 -I -B scripts/build_probe_runtime.py "$RUNNER_TEMP/trustroot-python-runtime"
+          python3 -I -B scripts/build_probe_runtime.py "/tmp/trustroot-python-runtime-$GITHUB_RUN_ID"
       - name: Run every positive, negative and real OS isolation test without skips
         shell: bash
         env:
           TRUSTROOT_REQUIRE_ISOLATION: '1'
-          TRUSTROOT_PROBE_RUNTIME: ${{ runner.temp }}/trustroot-python-runtime
+          TRUSTROOT_PROBE_RUNTIME: /tmp/trustroot-python-runtime-${{ github.run_id }}
         run: |
           set -euo pipefail
           # This disposable public VM contains only generic synthetic tests.
