@@ -1,0 +1,51 @@
+name: Public Backend Comparison - Real Guests
+
+on:
+  push:
+    branches: [sec02/controller-isolation-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qemu-hardware-guest:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Prepare official public packages on disposable VM
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 busybox-static acl
+          test -c /dev/kvm
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm
+          mkdir -p "$RUNNER_TEMP/public-kernel"
+          cd "$RUNNER_TEMP/public-kernel"
+          package=$(apt-cache depends linux-image-virtual | awk '/Depends: linux-image-[0-9]/{print $2; exit}')
+          test -n "$package"
+          apt-get download "$package"
+          dpkg-deb --extract ./*.deb image
+          kernel=$(find "$RUNNER_TEMP/public-kernel/image/boot" -name 'vmlinuz-*' -type f)
+          test -f "$kernel"
+          echo "PUBLIC_PROBE_KERNEL=$kernel" >> "$GITHUB_ENV"
+          qemu-system-x86_64 --version
+          sha256sum ./*.deb "$kernel"
+      - name: Real hardware guest acceptance rejection fresh state and timeout
+        run: python3 -B probes/qemu_live.py "$PUBLIC_PROBE_KERNEL"
+  wsl2-confined-guest:
+    runs-on: windows-2025
+    timeout-minutes: 15
+    env:
+      TRUSTROOT_DISPOSABLE_PUBLIC_VM: '1'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Actual WSL2 capability and confined synthetic execution
+        shell: pwsh
+        run: ./probes/wsl2_public_ci.ps1
