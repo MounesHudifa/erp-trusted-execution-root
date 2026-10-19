@@ -23,6 +23,9 @@ class ActualIsolationTests(unittest.TestCase):
                         tuple((p, c.blob_hash(v)) for p, v in source.items()), 2345)
 
     def run_source(self, script, timeout=15):
+        # Syntax-check only these fixed public synthetic test payloads. The
+        # production controller never compiles target source on the host.
+        compile(script, '<public-synthetic-fixture>', 'exec')
         source = {"main.py": script.encode()}
         try:
             return c.isolated_probe(self.permit(source), source, self.runtime, timeout=timeout)
@@ -35,7 +38,7 @@ class ActualIsolationTests(unittest.TestCase):
     def test_actual_payload_has_no_host_network_credentials_or_writes(self):
         host_net = os.readlink("/proc/self/ns/net")
         script = '''import os, pathlib, ctypes
-assert os.readlink('/proc/self/ns/net') != HOST_NET
+assert os.readlink('/proc/self/ns/net') != __EXPECTED_NETWORK_NAMESPACE__
 assert 'GITHUB_TOKEN' not in os.environ and 'GH_TOKEN' not in os.environ
 assert 'SYNTHETIC_CONTROLLER_SECRET' not in os.environ
 for p in ('/home/runner', '/workspace', '/run/docker.sock', '/etc/shadow'):
@@ -52,7 +55,7 @@ assert int(caps.split()[1],16) == 0
 assert ctypes.CDLL(None).unshare(0x10000000) == -1
 pathlib.Path('/work/temporary.txt').write_text('disposable')
 print('HOST_NETWORK_CREDENTIAL_WRITE_DENIAL=PASS')
-'''.replace("HOST_NET", repr(host_net))
+'''.replace("__EXPECTED_NETWORK_NAMESPACE__", repr(host_net))
         with patch.dict(os.environ, {"SYNTHETIC_CONTROLLER_SECRET": "dummy-not-a-secret"}):
             result = self.run_source(script)
         self.assertIn(b"DENIAL=PASS", result["output"])
