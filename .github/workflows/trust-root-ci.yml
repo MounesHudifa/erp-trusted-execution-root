@@ -20,8 +20,30 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
-      - name: Run negative and positive security fixtures (isolated GitHub-hosted runner)
+      - name: Prepare public-only disposable isolation test runtime
         shell: bash
         run: |
           set -euo pipefail
-          python3 -B -m unittest discover -s tests -v
+          if ! command -v bwrap >/dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y bubblewrap
+          fi
+          bwrap --version
+          python3 -I -B scripts/build_probe_runtime.py "$RUNNER_TEMP/trustroot-python-runtime"
+      - name: Run every positive, negative and real OS isolation test without skips
+        shell: bash
+        env:
+          TRUSTROOT_REQUIRE_ISOLATION: '1'
+          TRUSTROOT_PROBE_RUNTIME: ${{ runner.temp }}/trustroot-python-runtime
+        run: |
+          set -euo pipefail
+          python3 -B - <<'PY'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('tests')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped:
+              raise SystemExit('PUBLIC_SECURITY_TESTS_FAILED_OR_SKIPPED')
+          print('REAL_OS_ISOLATION_TESTS_EXECUTED=YES')
+          print('SKIPPED_TESTS=0')
+          print('PRIVATE_REPOSITORY_ACCESSED=NO')
+          PY
