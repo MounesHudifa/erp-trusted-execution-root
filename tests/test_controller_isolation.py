@@ -23,7 +23,13 @@ class ActualIsolationTests(unittest.TestCase):
 
     def run_source(self, script, timeout=15):
         source = {"main.py": script.encode()}
-        return c.isolated_probe(self.permit(source), source, self.runtime, timeout=timeout)
+        try:
+            return c.isolated_probe(self.permit(source), source, self.runtime, timeout=timeout)
+        except c.IsolationFailed as exc:
+            # This suite has synthetic PUBLIC payloads exclusively. Production
+            # controller exceptions never include candidate output in their text.
+            print('PUBLIC_SYNTHETIC_ISOLATION_DIAGNOSTIC=' + exc.diagnostic.decode('utf-8', errors='replace'))
+            raise
 
     def test_actual_payload_has_no_host_network_credentials_or_writes(self):
         host_net = os.readlink("/proc/self/ns/net")

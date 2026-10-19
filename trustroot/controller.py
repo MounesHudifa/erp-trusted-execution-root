@@ -29,6 +29,13 @@ class Denied(ValueError):
     pass
 
 
+class IsolationFailed(Denied):
+    """Private diagnostics are data, never included in printable exception text."""
+    def __init__(self, returncode: int, diagnostic: bytes):
+        super().__init__("ISOLATION_OR_CANDIDATE_FAILED:" + str(returncode))
+        self.diagnostic = diagnostic
+
+
 def digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
                                     ensure_ascii=False).encode()).hexdigest()
@@ -226,6 +233,6 @@ def isolated_probe(permit: Permit, source: Mapping[str, bytes], runtime: Path,
             if expired:
                 raise Denied("ISOLATED_VALIDATION_TIMEOUT")
             if process.returncode != 0:
-                raise Denied("ISOLATION_OR_CANDIDATE_FAILED:" + str(process.returncode))
+                raise IsolationFailed(process.returncode, raw)
             return {"status": "ISOLATED_PROBE_PASS", "output": raw,
                     "disposableWorkspace": str(staging), "adoptionAllowed": False}
