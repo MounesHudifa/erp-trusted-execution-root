@@ -4,6 +4,7 @@ Not a private-candidate launcher. No guest-supplied assertion grants authority.
 No TCG fallback; no KVM means failure, never a skipped/pretend isolation pass.
 """
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -65,6 +66,8 @@ def run_guest(kernel, script, timeout=40):
         initrd = root / 'probe.cpio'
         make_initrd(initrd, script)
         argv = qemu_probe_argv(shutil.which('qemu-system-x86_64'), kernel, initrd, 'kvm')
+        trace = root / 'kvm-trace.log'
+        argv = ['strace', '-f', '-e', 'trace=openat,ioctl', '-o', str(trace)] + argv
         with (root / 'serial.log').open('wb') as stream:
             p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stream,
                                  stderr=subprocess.STDOUT, env={'PATH': '/usr/bin:/bin'},
@@ -78,7 +81,9 @@ def run_guest(kernel, script, timeout=40):
                 p.wait(timeout=5)
         output = (root / 'serial.log').read_bytes().decode(errors='replace')
         if p.returncode != 0 and not timed_out:
-            raise AssertionError('QEMU failed: ' + output[-6000:])
+            details = '\n'.join(l for l in trace.read_text().splitlines()
+                                if '/dev/kvm' in l or 'EACCES' in l or 'EPERM' in l)
+            raise AssertionError('QEMU failed: ' + output[-6000:] + '\n' + details)
         result = {'seconds': round(time.monotonic() - started, 3), 'timedOut': timed_out,
                   'output': output, 'initrdSha256': hashlib.sha256(initrd.read_bytes()).hexdigest()}
     assert not root.exists(), 'guest staging not destroyed'
@@ -88,6 +93,18 @@ def run_guest(kernel, script, timeout=40):
 def main():
     assert os.geteuid() != 0, 'QEMU must run unprivileged'
     assert os.access('/dev/kvm', os.R_OK | os.W_OK), 'HARDWARE_KVM_UNAVAILABLE_NO_TCG_FALLBACK'
+    # Pinpoint open versus ioctl versus executable-specific denial; never relax
+    # LSM or substitute TCG after a host-policy rejection.
+    print('KVM_FILE_MODE=' + oct(os.stat('/dev/kvm').st_mode), flush=True)
+    print('HOST_LSM=' + Path('/proc/self/attr/current').read_text().strip(), flush=True)
+    fd = os.open('/dev/kvm', os.O_RDWR | os.O_CLOEXEC)
+    try:
+        print('KVM_API_VERSION=' + str(fcntl.ioctl(fd, 0xAE00, 0)), flush=True)
+        vm = fcntl.ioctl(fd, 0xAE01, 0)
+        os.close(vm)
+        print('KVM_CREATE_VM=PASS', flush=True)
+    finally:
+        os.close(fd)
     kernel = Path(sys.argv[1]).resolve()
     os.environ['SYNTHETIC_CONTROLLER_SECRET'] = 'public-dummy-host-marker'
     with tempfile.TemporaryDirectory(prefix='public-host-') as host:

@@ -17,8 +17,20 @@ $configChanged = $false
 New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
 
 function Invoke-Guest([string]$Script) {
-    $Script.Replace("`r`n", "`n") | & wsl.exe --distribution $distro --user root --exec /bin/bash --noprofile --norc -s
-    if ($LASTEXITCODE -ne 0) { throw "WSL_GUEST_COMMAND_FAILED:$LASTEXITCODE" }
+    # Native PowerShell pipelines append CRLF on Windows, corrupting final
+    # shell tokens (measured in the first run). Write exact LF UTF-8 stdin.
+    $start = [Diagnostics.ProcessStartInfo]::new('wsl.exe')
+    $start.UseShellExecute = $false
+    $start.RedirectStandardInput = $true
+    $start.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
+    foreach ($arg in @('--distribution',$distro,'--user','root','--exec','/bin/bash','--noprofile','--norc','-s')) { $start.ArgumentList.Add($arg) }
+    $process = [Diagnostics.Process]::Start($start)
+    try {
+        $process.StandardInput.Write($Script.Replace("`r", '') + "`n")
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit(180000)) { $process.Kill($true); throw 'WSL_COMMAND_TIMEOUT' }
+        if ($process.ExitCode -ne 0) { throw "WSL_GUEST_COMMAND_FAILED:$($process.ExitCode)" }
+    } finally { $process.Dispose() }
 }
 
 try {
@@ -53,6 +65,12 @@ export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
 apt-get install -y -qq python3 bubblewrap
 mkdir -p /opt/probe/trustroot /opt/probe/tests /opt/probe/scripts
+'@
+    Invoke-Guest @'
+set -eu
+test -d /opt/probe/scripts
+test ! -d "$(printf '/opt/probe/scripts\r')"
+echo WSL_STDIN_LF_REGRESSION=PASS
 '@
     foreach ($relative in @('trustroot/__init__.py','trustroot/verify.py','trustroot/controller.py','trustroot/backends.py','tests/test_trustroot.py','tests/test_controller.py','tests/test_controller_isolation.py','tests/test_backends.py','scripts/build_probe_runtime.py')) {
         $bytes = [IO.File]::ReadAllBytes((Join-Path $env:GITHUB_WORKSPACE $relative))
