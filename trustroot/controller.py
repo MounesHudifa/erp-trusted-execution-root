@@ -207,7 +207,7 @@ def isolated_probe(permit: Permit, source: Mapping[str, bytes], runtime: Path,
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
             target.chmod(0o444)
-        argv = [bwrap, "--unshare-all", "--die-with-parent", "--new-session",
+        argv = [bwrap, "--unshare-all", "--unshare-user", "--die-with-parent", "--new-session",
                 "--disable-userns", "--cap-drop", "ALL", "--clearenv",
                 "--ro-bind", str(runtime), "/", "--proc", "/proc", "--dev", "/dev",
                 "--tmpfs", "/tmp", "--tmpfs", "/work", "--ro-bind", str(staging), "/candidate",

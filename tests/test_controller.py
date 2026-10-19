@@ -149,6 +149,15 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaisesRegex(c.Denied, "CANDIDATE_FILE_SET_DRIFT"):
                 c.isolated_probe(permit, {}, root)
 
+    def test_backend_requires_explicit_user_namespace_not_optional_unshare_all(self):
+        # bwrap 0.9.0 treats --unshare-all's user namespace as optional;
+        # --disable-userns requires an explicit --unshare-user. Do not fix
+        # that runtime refusal by dropping the nested-namespace protection.
+        import inspect
+        source = inspect.getsource(c.isolated_probe)
+        self.assertIn('"--unshare-user"', source)
+        self.assertIn('"--disable-userns"', source)
+
 
 if __name__ == "__main__":
     unittest.main()
