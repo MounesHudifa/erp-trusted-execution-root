@@ -37,6 +37,10 @@ jobs:
           sha256sum ./*.deb "$kernel"
       - name: Real hardware guest acceptance rejection fresh state and timeout
         run: python3 -B probes/qemu_live.py "$PUBLIC_PROBE_KERNEL"
+      - name: Read kernel denial evidence without changing confinement
+        if: failure()
+        run: |
+          sudo journalctl -k --since '-10 minutes' --no-pager | grep -E 'apparmor|DENIED|qemu|kvm' | tail -50 || true
   wsl2-confined-guest:
     runs-on: windows-2025
     timeout-minutes: 15
@@ -47,5 +51,19 @@ jobs:
         with:
           persist-credentials: false
       - name: Actual WSL2 capability and confined synthetic execution
-        shell: pwsh
+        shell: powershell
         run: ./probes/wsl2_public_ci.ps1
+      - name: Validate installation preparation syntax and wrong-host denial
+        shell: powershell
+        run: |
+          $errors = $null
+          $tokens = $null
+          [Management.Automation.Language.Parser]::ParseFile((Join-Path $pwd 'probes/Prepare-Wsl2Trial.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+          $denied = $false
+          try { ./probes/Prepare-Wsl2Trial.ps1 -ExpectedComputerName 'not-this-public-host' } catch {
+            if ($_.Exception.Message -ne 'HOST_IDENTITY_MISMATCH') { throw }
+            $denied = $true
+          }
+          if (-not $denied) { throw 'WRONG_HOST_NOT_REJECTED' }
+          ./probes/Prepare-Wsl2Trial.ps1 -Action Plan -ExpectedComputerName $env:COMPUTERNAME

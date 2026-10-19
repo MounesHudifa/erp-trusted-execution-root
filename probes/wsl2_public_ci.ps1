@@ -1,15 +1,28 @@
-# PUBLIC disposable hosted VM experiment only. Never run on a product device.
+# Synthetic-only experiment. DeviceTrial requires separate exact authorization.
+# No private candidate execution or production deployment authority.
+#requires -Version 5.1
 [CmdletBinding()]
-param()
+param(
+    [switch]$DeviceTrial,
+    [string]$ExpectedComputerName,
+    [string]$SourceRoot = $env:GITHUB_WORKSPACE
+)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
-if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
-    $env:TRUSTROOT_DISPOSABLE_PUBLIC_VM -ne '1') {
-    throw 'PUBLIC_DISPOSABLE_CI_ONLY_NOT_A_DEVICE_INSTALLER'
+if ($DeviceTrial) {
+    # This switch is NOT authorization. Caller must obtain an exact new adopted
+    # governance permit and platform consent before this separately approved trial.
+    if (-not $ExpectedComputerName -or $env:COMPUTERNAME -cne $ExpectedComputerName) { throw 'DEVICE_IDENTITY_MISMATCH' }
+    if (-not $SourceRoot -or -not (Test-Path (Join-Path $SourceRoot 'trustroot/controller.py'))) { throw 'PINNED_PUBLIC_SOURCE_REQUIRED' }
+    if (Test-Path (Join-Path $env:USERPROFILE '.wslconfig')) { throw 'EXISTING_WSL_CONFIG_PRESERVED_STOP' }
+} elseif ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
+          $env:TRUSTROOT_DISPOSABLE_PUBLIC_VM -ne '1') {
+    throw 'PUBLIC_DISPOSABLE_CI_OR_SEPARATELY_AUTHORIZED_DEVICE_TRIAL_ONLY'
 }
-$distro = 'public-isolation-' + $env:GITHUB_RUN_ID
-$work = Join-Path $env:RUNNER_TEMP $distro
+$trialId = [guid]::NewGuid().ToString('N')
+$distro = 'public-isolation-' + $trialId
+$work = Join-Path ([IO.Path]::GetTempPath()) $distro
 $config = Join-Path $env:USERPROFILE '.wslconfig'
 $originalConfig = if (Test-Path $config) { [IO.File]::ReadAllBytes($config) } else { $null }
 $registered = $false
@@ -22,13 +35,14 @@ function Invoke-Guest([string]$Script) {
     $start = [Diagnostics.ProcessStartInfo]::new('wsl.exe')
     $start.UseShellExecute = $false
     $start.RedirectStandardInput = $true
-    $start.StandardInputEncoding = [Text.UTF8Encoding]::new($false)
-    foreach ($arg in @('--distribution',$distro,'--user','root','--exec','/bin/bash','--noprofile','--norc','-s')) { $start.ArgumentList.Add($arg) }
+    # Fixed UUID-derived distribution name, no shell interpolation from a caller.
+    $start.Arguments = "--distribution $distro --user root --exec /bin/bash --noprofile --norc -s"
     $process = [Diagnostics.Process]::Start($start)
     try {
-        $process.StandardInput.Write($Script.Replace("`r", '') + "`n")
-        $process.StandardInput.Close()
-        if (-not $process.WaitForExit(180000)) { $process.Kill($true); throw 'WSL_COMMAND_TIMEOUT' }
+        $stdinBytes = [Text.UTF8Encoding]::new($false).GetBytes($Script.Replace("`r", '') + "`n")
+        $process.StandardInput.BaseStream.Write($stdinBytes, 0, $stdinBytes.Length)
+        $process.StandardInput.BaseStream.Close()
+        if (-not $process.WaitForExit(180000)) { $process.Kill(); throw 'WSL_COMMAND_TIMEOUT' }
         if ($process.ExitCode -ne 0) { throw "WSL_GUEST_COMMAND_FAILED:$($process.ExitCode)" }
     } finally { $process.Dispose() }
 }
@@ -39,6 +53,7 @@ try {
     if ($feature.State -ne 'Enabled') {
         throw 'PUBLIC_HOST_WSL2_PREREQUISITE_NOT_ENABLED_NO_REBOOT_OR_WSL1_FALLBACK'
     }
+    if (-not $DeviceTrial) {
     $msi = Join-Path $work 'wsl.3.0.3.0.x64.msi'
     Invoke-WebRequest 'https://github.com/microsoft/WSL/releases/download/3.0.3/wsl.3.0.3.0.x64.msi' -OutFile $msi
     if ((Get-FileHash $msi -Algorithm SHA256).Hash.ToLowerInvariant() -ne 'ae977286974255bd26bf925f00f40f5692c6b2084155cbc0563c09aea091f211') { throw 'WSL_MSI_DIGEST_MISMATCH' }
@@ -46,8 +61,11 @@ try {
     if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'Microsoft Corporation') { throw 'WSL_MSI_SIGNATURE_INVALID' }
     $install = Start-Process msiexec.exe -ArgumentList @('/i', $msi, '/qn', '/norestart') -Wait -PassThru
     if ($install.ExitCode -ne 0) { throw "PUBLIC_WSL_MSI_FAILED_OR_REBOOT_REQUIRED:$($install.ExitCode)" }
+    }
     & wsl.exe --version
     if ($LASTEXITCODE -ne 0) { throw 'PUBLIC_WSL_RUNTIME_NOT_READY' }
+    $version = ((& wsl.exe --version) -join "`n").Replace([string][char]0, '')
+    if ($version -notmatch '3\.0\.3\.0') { throw 'EXACT_WSL_VERSION_REQUIRED_NO_AUTOMATIC_UPDATE' }
     $existing = ((& wsl.exe --list --quiet) -join "`n").Replace([string][char]0, '').Trim()
     if ($existing -and $existing -notmatch 'no installed distributions') { throw 'PUBLIC_VM_HAS_OTHER_DISTROS_NO_GLOBAL_CONFIGURATION_CHANGE' }
     $archive = Join-Path $work 'ubuntu-base.tar.gz'
@@ -73,7 +91,7 @@ test ! -d "$(printf '/opt/probe/scripts\r')"
 echo WSL_STDIN_LF_REGRESSION=PASS
 '@
     foreach ($relative in @('trustroot/__init__.py','trustroot/verify.py','trustroot/controller.py','trustroot/backends.py','tests/test_trustroot.py','tests/test_controller.py','tests/test_controller_isolation.py','tests/test_backends.py','scripts/build_probe_runtime.py')) {
-        $bytes = [IO.File]::ReadAllBytes((Join-Path $env:GITHUB_WORKSPACE $relative))
+        $bytes = [IO.File]::ReadAllBytes((Join-Path $SourceRoot $relative))
         $encoded = [Convert]::ToBase64String($bytes)
         Invoke-Guest ("printf '%s' '$encoded' | base64 -d > '/opt/probe/$relative'")
     }
