@@ -6,9 +6,23 @@ checkout is included. Existing attestation and required CI workflows are unchang
 
 ## Exact runtime evidence
 
-The new workflow handles pull_request, pull_request_target, workflow_dispatch and
-workflow_call. Its first job executes a credential-free refusal and emits a DENY
-receipt. A caller cannot supply authority, secrets, executable input or a target URL.
+The new workflow handles pull_request, pull_request_target and workflow_dispatch.
+There is no workflow_call entry point, inputs, or reusable caller secret interface.
+GitHub automatically issues a restricted GITHUB_TOKEN even with permissions: {}.
+The job setup permissions log, not an environment-variable check, establishes its
+effective grants (the previous run showed Metadata: read). The inline test code
+does not consume that token or request/use a privileged Publisher credential.
+The environment-variable tripwire only detects listed variables if exported; it
+cannot establish the absence of tokens or inherited secrets in GitHub contexts.
+
+The first job emits a DENY diagnostic, never an independent attestation. On
+pull_request, GitHub executes candidate-controlled workflow code: the candidate
+can forge this output. No checkout does not mean no candidate code execution.
+The receipt explicitly records candidate_workflow_executed=true for that event
+and independent_attestation=false for every event. It is not an authority gate.
+An independent reviewer must inspect the exact workflow SHA, job setup grants,
+and GitHub server-side deployment rejection; candidate logs alone prove neither
+non-use of a credential nor isolation. No Publisher key has been provisioned.
 The second job deliberately requests the protected publisher environment only for
 pull_request. GitHub must reject deployment before any step starts. Its failure
 is expected evidence, NOT a green run or an ignored failing security test.
@@ -23,7 +37,10 @@ a skipped job, a local fixture or the pre-merge run as that proof.
 At base 31188e80894553c0c1cb8ac262863deca966e7bb:
 - trust-root-ci.yml: public checkout/tests; no environment or secrets.
 - trusted-attestation.yml: workflow_call, read-only permissions; no environment
-  or declared/inherited secrets. It does not publish PRs or issue credentials.
+  or secret-context references. A reusable caller can still use secrets: inherit
+  without declarations; this workflow's code does not consume those secrets.
+  This is a code-path observation, not proof that inheritance is impossible.
+  It does not publish PRs or request Publisher credentials.
 
 ## Remaining security gate
 
