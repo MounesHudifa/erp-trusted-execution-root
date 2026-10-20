@@ -26,3 +26,83 @@ jobs:
               raise SystemExit('CONTRACT_TEST_FAILURE_OR_SKIP')
           print('PRIVATE_TRIAL_DISPATCHED=NO; EXECUTION_AUTHORIZED=NO; SKIPPED=0')
           PY
+
+  credential-boundary-probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Real hosted metadata permission denial and synthetic boundary tests
+        shell: bash
+        env:
+          PROBE_TOKEN: ${{ github.token }}
+        run: |
+          python3 -I -B - <<'PY'
+          import os, json, pathlib, subprocess, sys, urllib.request, urllib.error
+          from copy import deepcopy
+          # No checkout, no user secret, no OIDC, no registration mutation.
+          # This probe never executes repository candidate source.
+          expected = {
+              "runner": "github-hosted", "os": "Linux", "permissions": {},
+              "secrets": [], "oidc": False, "bootstrap": False,
+              "owner_session": False, "host_mounts": [], "services": [],
+              "cache": False, "artifacts": False, "checkout": False,
+          }
+          def validate(value):
+              if type(value) is not dict or set(value) != set(expected):
+                  raise ValueError("BOUNDARY_DENIED")
+              for key, wanted in expected.items():
+                  if type(value[key]) is not type(wanted) or value[key] != wanted:
+                      raise ValueError("BOUNDARY_DENIED")
+          validate(deepcopy(expected))
+          mutations = {
+              "runner": "self-hosted", "os": "Windows",
+              "permissions": {"contents": "write"}, "secrets": ["dummy"],
+              "oidc": True, "bootstrap": True, "owner_session": True,
+              "host_mounts": ["dummy"], "services": ["dummy"],
+              "cache": True, "artifacts": True, "checkout": True,
+          }
+          refused = 0
+          for key, bad in mutations.items():
+              case = deepcopy(expected); case[key] = bad
+              try: validate(case)
+              except ValueError: refused += 1
+              else: raise SystemExit("NEGATIVE_TEST_FAILED")
+          assert refused == len(mutations)
+          assert os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+          assert os.environ.get("RUNNER_OS") == "Linux"
+          forbidden = ["GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN",
+              "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL"]
+          assert not any(os.environ.get(k) for k in forbidden)
+          # Existence checks only. Never read credential files or print paths.
+          home = pathlib.Path.home()
+          credential_paths = [home/".config/gh/hosts.yml", home/".git-credentials",
+              home/".ssh/id_rsa", home/".ssh/id_ed25519"]
+          assert not any(p.exists() for p in credential_paths)
+          # The dummy subprocess receives a new environment with no token.
+          child = subprocess.run([sys.executable, "-I", "-c",
+              "import os; assert set(os.environ) <= {'PATH','LC_CTYPE'}; print('DUMMY_ENV_CLEAR')"],
+              env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, timeout=5)
+          assert child.returncode == 0 and child.stdout.strip() == "DUMMY_ENV_CLEAR"
+          # Read-only real API call: admin-read inventory must be denied.
+          # Never POST registration-token or JIT configuration.
+          repo = os.environ["GITHUB_REPOSITORY"]
+          req = urllib.request.Request("https://api.github.com/repos/"+repo+"/actions/runners?per_page=1",
+              headers={"Authorization": "Bearer "+os.environ["PROBE_TOKEN"],
+                       "Accept": "application/vnd.github+json"})
+          try:
+              with urllib.request.urlopen(req, timeout=20) as response:
+                  code = response.status
+          except urllib.error.HTTPError as error:
+              code = error.code
+          except Exception:
+              raise SystemExit("API_PROBE_UNAVAILABLE_NO_PROOF")
+          assert code == 403, "ADMIN_READ_NOT_PROVEN_DENIED"
+          print(json.dumps({"hosted_linux": True, "oidc_env_absent": True,
+              "known_owner_credential_paths_absent": True,
+              "dummy_environment_token_free": True, "admin_read_http": code,
+              "synthetic_rejections": refused, "skipped": 0,
+              "registration_requests": 0, "candidate_executed": False,
+              "private_repository_tested": False, "registration_write_tested": False,
+              "external_enforcement_proven": False}))
+          PY
