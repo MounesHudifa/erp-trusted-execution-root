@@ -1,0 +1,98 @@
+name: Ephemeral Windows dummy capacity
+on:
+  push:
+    branches: [sec02/controller-isolation-validation]
+    paths: ['.github/workflows/windows-dummy-capacity.yml']
+permissions: {}
+jobs:
+  dummy:
+    runs-on: windows-2025
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Measure public dummy workload only
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $watch = [Diagnostics.Stopwatch]::StartNew()
+          $root = Join-Path $env:RUNNER_TEMP ('dummy-' + [guid]::NewGuid())
+          New-Item -ItemType Directory $root | Out-Null
+          try {
+            $os = Get-CimInstance Win32_OperatingSystem
+            $result = [ordered]@{
+              schema = 1; workload = 'PUBLIC_DUMMY_ONLY'
+              cpu = [Environment]::ProcessorCount
+              totalMemoryBytes = [long]$os.TotalVisibleMemorySize * 1024
+              freeMemoryBytes = [long]$os.FreePhysicalMemory * 1024
+              freeDiskBytes = [long](Get-PSDrive ($root.Substring(0,1))).Free
+              githubTokenAutomaticallyIssued = $true
+              publisherCredentialRequested = $false
+              candidateIsolationProven = $false
+              realModelLoaded = $false
+              realModelPerformanceProven = $false
+              privateRunnerParityProven = $false
+            }
+            $result.python = (& python --version 2>&1 | Out-String).Trim()
+            if ($LASTEXITCODE -ne 0) { throw 'PYTHON_UNAVAILABLE' }
+            $result.pythonPinnedVersionAvailable = $result.python -eq 'Python 3.13.15'
+            $py = Join-Path $root 'measure.py'
+            @'
+          import json,time,hashlib,ctypes
+          from ctypes import wintypes
+          class Counters(ctypes.Structure):
+              _fields_=[("cb",wintypes.DWORD),("PageFaultCount",wintypes.DWORD)]+[(x,ctypes.c_size_t) for x in ("PeakWorkingSetSize","WorkingSetSize","QuotaPeakPagedPoolUsage","QuotaPagedPoolUsage","QuotaPeakNonPagedPoolUsage","QuotaNonPagedPoolUsage","PagefileUsage","PeakPagefileUsage")]
+          t=time.perf_counter()
+          data=bytearray(128*1024*1024)
+          for i in range(0,len(data),4096): data[i]=1
+          h=hashlib.sha256(data).hexdigest()
+          c=Counters();c.cb=ctypes.sizeof(c)
+          ctypes.windll.kernel32.GetCurrentProcess.restype=wintypes.HANDLE
+          if not ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(),ctypes.byref(c),c.cb): raise RuntimeError("MEMORY_MEASURE_FAILED")
+          print(json.dumps({"dummyBytes":len(data),"seconds":time.perf_counter()-t,"peakWorkingSetBytes":c.PeakWorkingSetSize,"digest":h}))
+          '@ | Set-Content $py
+            $result.dummy = (& python -I -B $py | ConvertFrom-Json)
+            if ($LASTEXITCODE -ne 0) { throw 'DUMMY_FAILED' }
+            $sdks = @(& dotnet --list-sdks)
+            if ($LASTEXITCODE -ne 0) { throw 'DOTNET_UNAVAILABLE' }
+            $result.sdkVersions = @($sdks | ForEach-Object { ($_ -split ' ')[0] })
+            $result.exactSdkAvailable = '10.0.302' -in $result.sdkVersions
+            $result.semanticProbe = 'BLOCKED_EXACT_SDK_MISSING'
+            if ($result.exactSdkAvailable) {
+              '{"sdk":{"version":"10.0.302","rollForward":"disable"}}' | Set-Content (Join-Path $root 'global.json')
+              '<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework></PropertyGroup><ItemGroup><Reference Include="Microsoft.CodeAnalysis"><HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.dll</HintPath></Reference><Reference Include="Microsoft.CodeAnalysis.CSharp"><HintPath>$(MSBuildSDKsPath)/../Roslyn/bincore/Microsoft.CodeAnalysis.CSharp.dll</HintPath></Reference></ItemGroup></Project>' | Set-Content (Join-Path $root 'Dummy.csproj')
+              '<configuration><packageSources><clear /></packageSources></configuration>' | Set-Content (Join-Path $root 'NuGet.Config')
+              @'
+          using System;
+          using System.Linq;
+          using Microsoft.CodeAnalysis;
+          using Microsoft.CodeAnalysis.CSharp;
+          using Microsoft.CodeAnalysis.CSharp.Syntax;
+          class Program {
+            static int Main() {
+              var t=CSharpSyntaxTree.ParseText("class Dummy { public int Value => 7; }");
+              var c=CSharpCompilation.Create("Dummy",new[]{t},new[]{MetadataReference.CreateFromFile(typeof(object).Assembly.Location)},new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+              var p=t.GetRoot().DescendantNodes().OfType<PropertyDeclarationSyntax>().Single();
+              var symbol=c.GetSemanticModel(t).GetDeclaredSymbol(p) as IPropertySymbol;
+              if(symbol?.Type.SpecialType!=SpecialType.System_Int32 || c.GetDiagnostics().Any(d=>d.Severity==DiagnosticSeverity.Error)) return 1;
+              var bad=CSharpSyntaxTree.ParseText("class Bad { public int Value => \"wrong\"; }");
+              var rejected=c.ReplaceSyntaxTree(t,bad).GetDiagnostics().Any(d=>d.Severity==DiagnosticSeverity.Error);
+              Console.WriteLine("DUMMY_SEMANTIC_ACCEPT_AND_REJECT="+rejected);
+              return rejected?0:2;
+            }
+          }
+          '@ | Set-Content (Join-Path $root 'Program.cs')
+              Push-Location $root
+              try {
+                $compile = [Diagnostics.Stopwatch]::StartNew()
+                & dotnet run --project Dummy.csproj --configuration Release
+                if ($LASTEXITCODE -ne 0) { throw 'SEMANTIC_PROBE_FAILED' }
+                $result.semanticSeconds = $compile.Elapsed.TotalSeconds
+                $result.semanticProbe = 'DUMMY_ACCEPT_AND_REJECT_PASS'
+              } finally { Pop-Location }
+            }
+            $result.elapsedSeconds = $watch.Elapsed.TotalSeconds
+            $result | ConvertTo-Json -Depth 5
+          } finally {
+            Remove-Item -LiteralPath $root -Recurse -Force
+            if (Test-Path $root) { throw 'DUMMY_CLEANUP_FAILED' }
+          }
