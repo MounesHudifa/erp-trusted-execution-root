@@ -4,6 +4,9 @@ on:
   push:
     branches: [sec02/controller-isolation-validation]
     paths-ignore:
+      - 'probes/PendingRename-Summary.ps1'
+      - 'tests/Test-PendingRenamePrivacy.ps1'
+      - '.github/workflows/pending-rename-tests.yml'
       - 'probes/Interactive-ReadOnlyPlan.ps1'
       - 'tests/Test-InteractivePlan.ps1'
       - '.github/workflows/interactive-plan-tests.yml'
