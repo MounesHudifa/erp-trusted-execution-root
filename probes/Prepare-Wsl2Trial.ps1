@@ -47,16 +47,16 @@ try {
  if($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation'){throw 'MSI_SIGNATURE_MISMATCH'}
  $stage='MSI'
  $r.msiAttempted=$true;$r.status='INSTALL_ATTEMPT_STARTED';Write-TrialReceipt
- $p=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/msiexec.exe') -ArgumentList @('/i',('"'+$msi+'"'),'/qn','/norestart','REBOOT=ReallySuppress','/L*v',('"'+$log+'"')) -Wait -PassThru
+ $p=Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\msiexec.exe') -ArgumentList @('/i',('"'+$msi+'"'),'/qn','/norestart','REBOOT=ReallySuppress','/L*v',('"'+$log+'"')) -Wait -PassThru
  $outcome=Get-WslTrialOutcome $p.ExitCode
  foreach($k in $outcome.Keys){$r[$k]=$outcome[$k]}
  Write-TrialReceipt
 } catch {
- $r.status='FAILED_OR_UNEXPECTED_STOP';$r.failureCode=$stage+'_FAILED'
+ $r.status='FAILED_OR_UNEXPECTED_STOP';$r.failureCode=$stage+'_FAILED';$r['failureHResult']=[int]$_.Exception.HResult
  # Do not emit exception text or MSI logs, which can contain private paths.
  try {Write-TrialReceipt} catch {Write-Output 'PRIVATE_RECEIPT_WRITE_FAILED_STOP'}
 }
-$r|Select-Object status,msiAttempted,msiExitCode,failureCode,candidateExecutionAllowed,linuxExecutionAllowed,rebootAllowed,automaticRollbackAllowed,isolationProven|ConvertTo-Json
+[pscustomobject]$r|Select-Object status,msiAttempted,msiExitCode,failureCode,failureHResult,candidateExecutionAllowed,linuxExecutionAllowed,rebootAllowed,automaticRollbackAllowed,isolationProven|ConvertTo-Json
 # Every outcome terminates this stage. No WSL command, reboot, runner change,
 # registry write, uninstall, retry or candidate execution is implemented here.
 if($r.status -eq 'REBOOT_REQUIRED_STOP'){exit 3010}

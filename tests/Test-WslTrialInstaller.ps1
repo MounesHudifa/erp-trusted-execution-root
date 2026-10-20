@@ -46,6 +46,7 @@ if($env:TRIAL_CASE -eq 'existing-receipt'){
 $action=if($env:TRIAL_CASE -eq 'rollback'){'Rollback'}else{'Install'}
 $auth=if($env:TRIAL_CASE -eq 'missing-authority'){''}else{Join-Path $PSScriptRoot 'synthetic-authority.json'}
 & (Join-Path $PSScriptRoot 'Prepare-Wsl2Trial.ps1') -Action $action -ExpectedComputerName $env:COMPUTERNAME -AuthorizationEvidencePath $auth
+exit $LASTEXITCODE
 '@
   $child|Set-Content (Join-Path $dir 'child.ps1')
   $env:TRIAL_CASE=$case
@@ -69,6 +70,8 @@ $auth=if($env:TRIAL_CASE -eq 'missing-authority'){''}else{Join-Path $PSScriptRoo
    $r=Get-Content $receipt -Raw|ConvertFrom-Json
    $status=if($case -eq 'zero'){'INSTALLED_UNVALIDATED_STOP'}elseif($case -eq 'reboot'){'REBOOT_REQUIRED_STOP'}else{'FAILED_OR_UNEXPECTED_STOP'}
    if($r.status -ne $status -or $r.candidateExecutionAllowed -or $r.linuxExecutionAllowed -or $r.rebootAllowed -or $r.automaticRollbackAllowed -or $r.isolationProven){throw "RECEIPT_MISMATCH:$case"};$count++
+   $reported=($output -join [Environment]::NewLine)|ConvertFrom-Json
+   if($reported.status -cne $r.status -or $null -eq $reported.candidateExecutionAllowed){throw 'PUBLIC_RESULT_MUST_MATCH_RECEIPT'};$count++
   }
   Write-Output "SYNTHETIC_ENTRY_CASE_PASS=$case"
  }
