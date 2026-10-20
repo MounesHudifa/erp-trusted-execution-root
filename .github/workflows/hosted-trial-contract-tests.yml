@@ -804,3 +804,14 @@ jobs:
           print('TRANSPORT_IMPLEMENTATION_TESTED; GITHUB_API_SIMULATED; PRIVATE_SOURCE=NONE; LIVE_APP=NONE; SKIPPED=0')
           
           PY
+
+  publisher-environment-branch-denial:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    environment: trusted-product-publisher
+    steps:
+      - name: Must never execute on this untrusted branch
+        run: |
+          echo "ENVIRONMENT_BOUNDARY_BREACH_NO_CREDENTIALS_USED"
+          exit 1
