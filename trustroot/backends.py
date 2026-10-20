@@ -32,8 +32,9 @@ def require_backend(e: Evidence) -> None:
         if e.accelerator not in {'kvm', 'whpx'}:
             raise BackendDenied('QEMU_HARDWARE_ACCELERATOR_REQUIRED_NO_TCG')
     elif e.backend == 'wsl2':
-        if e.accelerator != 'wsl2' or e.wsl_namespace_confinement is not True:
-            raise BackendDenied('WSL2_ADDITIONAL_CONFINEMENT_REQUIRED')
+        # Microsoft explicitly excludes WSL distributions as host security boundaries.
+        # Namespace test success cannot override this production admission decision.
+        raise BackendDenied('WSL2_NOT_A_WINDOWS_HOST_SECURITY_BOUNDARY')
     else:
         raise BackendDenied('UNKNOWN_BACKEND')
     for field in ('live_host_proof', 'dedicated_identity', 'broker_write_protected',

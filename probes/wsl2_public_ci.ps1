@@ -12,18 +12,11 @@ $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $PSNativeCommandUseErrorActionPreference = $false
 if ($DeviceTrial) {
-    # This switch is NOT authorization. Caller must obtain an exact new adopted
-    # governance permit and platform consent before this separately approved trial.
-    if (-not $ExpectedComputerName -or $env:COMPUTERNAME -cne $ExpectedComputerName) { throw 'DEVICE_IDENTITY_MISMATCH' }
-    if (-not $SourceRoot -or -not (Test-Path (Join-Path $SourceRoot 'trustroot/controller.py'))) { throw 'PINNED_PUBLIC_SOURCE_REQUIRED' }
-    if (Test-Path (Join-Path $env:USERPROFILE '.wslconfig')) { throw 'EXISTING_WSL_CONFIG_PRESERVED_STOP' }
-    $devicePlan = (& (Join-Path $PSScriptRoot 'Get-Wsl2TrialPlan.ps1') -ExpectedComputerName $ExpectedComputerName) | ConvertFrom-Json
-    if ($devicePlan.vmpState -ne 'Enabled' -or -not $devicePlan.allUserAppxInventoryKnown) { throw 'DEVICE_PREREQUISITES_UNKNOWN_OR_NOT_READY' }
-    if ($devicePlan.pendingRebootIndicators.Count) { throw 'DEVICE_PENDING_REBOOT_PRESERVE_STOP' }
-    if ($devicePlan.currentUserDistributions.Count) { throw 'EXISTING_DEVICE_DISTROS_PRESERVED_STOP' }
-} elseif ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
-          $env:TRUSTROOT_DISPOSABLE_PUBLIC_VM -ne '1') {
-    throw 'PUBLIC_DISPOSABLE_CI_OR_SEPARATELY_AUTHORIZED_DEVICE_TRIAL_ONLY'
+    throw 'DEVICE_TRIAL_NOT_AUTHORIZED_WSL_IS_NOT_A_HOST_SECURITY_BOUNDARY'
+}
+if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
+    $env:TRUSTROOT_DISPOSABLE_PUBLIC_VM -ne '1') {
+    throw 'PUBLIC_DISPOSABLE_CI_ONLY'
 }
 $trialId = [guid]::NewGuid().ToString('N')
 $distro = 'public-isolation-' + $trialId
@@ -31,8 +24,6 @@ $work = Join-Path ([IO.Path]::GetTempPath()) $distro
 $config = Join-Path $env:USERPROFILE '.wslconfig'
 $originalConfig = if (Test-Path $config) { [IO.File]::ReadAllBytes($config) } else { $null }
 $registered = $false
-$configChanged = $false
-$writtenConfigHash = $null
 New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
 
 function Invoke-Guest([string]$Script) {
@@ -136,30 +127,16 @@ systemd=false
 enabled=false
 EOF
 '@
-    [IO.File]::WriteAllText($config, "[wsl2]`nmemory=3GB`nprocessors=2`nswap=0`nnetworkingMode=none`nlocalhostForwarding=false`ndnsTunneling=false`nautoProxy=false`nguiApplications=false`nnestedVirtualization=false`n", [Text.UTF8Encoding]::new($false))
-    $configChanged = $true
-    $writtenConfigHash = (Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash
     & wsl.exe --terminate $distro
     if ($LASTEXITCODE -ne 0) { throw 'TERMINATE_FAILED' }
-    # No other distro exists in this disposable public VM (checked above).
-    & wsl.exe --shutdown
-    if ($LASTEXITCODE -ne 0) { throw 'PUBLIC_VM_SHUTDOWN_FAILED' }
     Invoke-Guest @'
 set -eu
 uname -a
 test ! -e /mnt/c/Windows
 test -z "${WSL_INTEROP:-}"
 if command -v cmd.exe; then exit 41; fi
-python3 - <<'PY'
-import socket
-for target in [('192.0.2.1',443), ('1.1.1.1',443)]:
-    s=socket.socket();s.settimeout(1)
-    try:s.connect(target)
-    except OSError:pass
-    else:raise AssertionError('UNAUTHORIZED_NETWORK_REACHABLE')
-    finally:s.close()
-print('WSL2_NETWORK_DENIAL=PASS')
-PY
+# Network denial is enforced and tested in the candidate namespace, not
+# assumed for the whole distribution. Trusted provisioning used networking.
 # Mount-denial probes run only inside the capability-dropped candidate namespace.
 # They use synthetic Linux paths, never a Windows drive or a host file.
 cd /opt/probe
@@ -186,14 +163,11 @@ PY
         if ($running.Contains($distro)) { throw 'TEST_DISTRO_STILL_RUNNING' }
         Write-Output 'DISPOSABLE_WSL2_DISTRO_DESTROYED=YES'
     }
-    if ($configChanged) {
-        if (-not (Test-Path -LiteralPath $config) -or (Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash -ne $writtenConfigHash) { throw 'CONFIG_CHANGED_EXTERNALLY_PRESERVE_STOP' }
-        if ($null -ne $originalConfig) { [IO.File]::WriteAllBytes($config,$originalConfig) }
-        else { Remove-Item -LiteralPath $config }
-    }
+    $afterConfig = if (Test-Path $config) { [IO.File]::ReadAllBytes($config) } else { $null }
+    if (($null -eq $originalConfig) -ne ($null -eq $afterConfig)) { throw 'GLOBAL_CONFIG_PRESENCE_CHANGED' }
+    if ($null -ne $originalConfig -and [Convert]::ToBase64String($originalConfig) -cne [Convert]::ToBase64String($afterConfig)) { throw 'GLOBAL_CONFIG_BYTES_CHANGED' }
     # Only this job-created directory; never a pre-existing/user distribution.
     Remove-Item -LiteralPath $work -Recurse -Force
     if (Test-Path -LiteralPath $work) { throw 'TRIAL_DIRECTORY_PERSISTED' }
-    if ($configChanged -and $null -eq $originalConfig -and (Test-Path -LiteralPath $config)) { throw 'TRIAL_CONFIG_PERSISTED' }
-    Write-Output 'TRIAL_DIRECTORY_AND_CONFIG_CLEANUP_VERIFIED=YES'
+    Write-Output 'TRIAL_DIRECTORY_CLEANED_GLOBAL_CONFIG_UNCHANGED=YES'
 }

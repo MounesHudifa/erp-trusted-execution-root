@@ -40,12 +40,13 @@ class BackendAdmissionTests(unittest.TestCase):
                 require_backend(self.fixture(permanent_runner_count=count))
 
     def test_bare_wsl_config_is_not_confinement(self):
-        with self.assertRaisesRegex(BackendDenied, 'ADDITIONAL_CONFINEMENT'):
+        with self.assertRaisesRegex(BackendDenied, 'WSL2_NOT_A_WINDOWS_HOST_SECURITY_BOUNDARY'):
             require_backend(self.fixture(backend='wsl2', accelerator='wsl2'))
 
-    def test_synthetic_confined_wsl2_acceptance(self):
-        require_backend(self.fixture(backend='wsl2', accelerator='wsl2',
-                                     wsl_namespace_confinement=True))
+    def test_namespace_success_cannot_authorize_wsl_host_boundary(self):
+        with self.assertRaisesRegex(BackendDenied, 'WSL2_NOT_A_WINDOWS_HOST_SECURITY_BOUNDARY'):
+            require_backend(self.fixture(backend='wsl2', accelerator='wsl2',
+                                         wsl_namespace_confinement=True))
 
     def test_wsl1_fallback_denies(self):
         with self.assertRaises(BackendDenied):

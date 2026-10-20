@@ -62,6 +62,22 @@ print('HOST_NETWORK_CREDENTIAL_WRITE_DENIAL=PASS')
         self.assertFalse(Path(result["disposableWorkspace"]).exists())
         self.assertFalse(result["adoptionAllowed"])
 
+    def test_actual_candidate_network_and_windows_interop_denied(self):
+        result = self.run_source("""import socket, pathlib, subprocess
+for target in [('127.0.0.1', 445), ('192.0.2.1', 443), ('1.1.1.1', 443)]:
+    with socket.socket() as sock:
+        sock.settimeout(1)
+        try: sock.connect(target)
+        except OSError: pass
+        else: raise AssertionError('NETWORK_REACHABLE')
+assert not pathlib.Path('/proc/sys/fs/binfmt_misc/WSLInterop').exists()
+try: subprocess.run(['/mnt/c/Windows/System32/cmd.exe', '/c', 'exit'], check=True)
+except OSError: pass
+else: raise AssertionError('WINDOWS_INTEROP_REACHABLE')
+print('CANDIDATE_NETWORK_AND_WINDOWS_INTEROP_DENIED=PASS')
+""")
+        self.assertIn(b'INTEROP_DENIED=PASS', result['output'])
+
     def test_actual_second_process_has_fresh_disposable_storage(self):
         script = "from pathlib import Path\np=Path('/work/persist')\nassert not p.exists()\np.write_text('one run')\nprint('FRESH=PASS')\n"
         for _ in range(2):

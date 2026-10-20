@@ -75,6 +75,13 @@ class ControllerTests(unittest.TestCase):
         self.denied("PRIVATE_RUNNER_SCHEDULING_BOUNDARY_OPEN")
         self.assertEqual(self.gh.main_read_count, 0)
 
+    def test_eight_registrations_cannot_be_hidden_by_labels_or_offline_state(self):
+        for count in range(1, 9):
+            self.runners = {"total_count": count, "runners": [
+                {"id": n, "status": "offline", "labels": []} for n in range(count)]}
+            self.denied("PRIVATE_RUNNER_SCHEDULING_BOUNDARY_OPEN")
+        self.assertEqual(self.gh.main_read_count, 0)
+
     def test_inconsistent_runner_inventory_denies(self):
         self.runners = {"total_count": 0, "runners": [{"status": "offline"}]}
         self.denied("PRIVATE_RUNNER_SCHEDULING_BOUNDARY_OPEN")
