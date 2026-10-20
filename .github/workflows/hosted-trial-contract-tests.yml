@@ -106,3 +106,266 @@ jobs:
               "private_repository_tested": False, "registration_write_tested": False,
               "external_enforcement_proven": False}))
           PY
+
+  publication-contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Synthetic publication and continuation contract, no credentials
+        shell: bash
+        run: |
+          python3 -I -B - <<'PY'
+          """Synthetic publication contract. No live adapter or credentials; not deployable."""
+          import hashlib
+          import json
+          import re
+          import sqlite3
+          from dataclasses import dataclass
+          
+          
+          class Refused(Exception):
+              pass
+          
+          
+          def digest(value):
+              return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+          
+          
+          @dataclass(frozen=True)
+          class Binding:
+              repository: str
+              authorization: str
+              control_sha: str
+              base_sha: str
+              head_sha: str
+              source: str
+              target: str
+              files: tuple  # exact (path, SHA256) pairs from independent complete enumeration
+              authority_digest: str
+          
+          
+          class Journal:
+              """Test durable atomic reservation; production storage integration is NOT adopted."""
+              def __init__(self, path):
+                  self.db = sqlite3.connect(path)
+                  self.db.execute('CREATE TABLE IF NOT EXISTS reservations (auth TEXT PRIMARY KEY, binding TEXT, status TEXT)')
+                  self.db.commit()
+          
+              def reserve(self, binding):
+                  try:
+                      with self.db:
+                          self.db.execute('INSERT INTO reservations VALUES (?, ?, ?)',
+                              (binding.authorization, digest(binding.__dict__), 'RESERVED'))
+                  except sqlite3.IntegrityError:
+                      raise Refused('REPLAY_OR_UNCERTAIN_PREVIOUS_ATTEMPT') from None
+          
+              def complete(self, binding):
+                  with self.db:
+                      self.db.execute('UPDATE reservations SET status=? WHERE auth=?', ('PUBLISHED', binding.authorization))
+          
+          
+          class Publisher:
+              """Only a trusted adapter can supply facts. Request data is never authority."""
+              def __init__(self, facts, api, journal, app_id, bot_id):
+                  self.facts, self.api, self.journal = facts, api, journal
+                  self.app_id, self.bot_id = app_id, bot_id
+          
+              def publish(self, request):
+                  if type(request) is not dict or set(request) != {'request_id'}:
+                      raise Refused('OPAQUE_REQUEST_ONLY')
+                  if type(request['request_id']) is not str or not re.fullmatch('[0-9a-f]{64}', request['request_id']):
+                      raise Refused('REQUEST_ID')
+                  # This method must authenticate official provenance and recompute full diff.
+                  b = self.facts.resolve_authorized(request['request_id'])
+                  if not isinstance(b, Binding) or not b.files:
+                      raise Refused('NO_AUTHORIZED_CHANGE')
+                  for sha in (b.control_sha, b.base_sha, b.head_sha):
+                      if not re.fullmatch('[0-9a-f]{40}', sha):
+                          raise Refused('SHA')
+                  if b.base_sha == b.head_sha or len(set(p for p, _ in b.files)) != len(b.files):
+                      raise Refused('EMPTY_OR_DUPLICATE_CHANGE')
+                  for path, fingerprint in b.files:
+                      if (path.startswith(('/', '.github/')) or '\\' in path or
+                              any(p in ('', '.', '..') for p in path.split('/')) or
+                              not re.fullmatch('[0-9a-f]{64}', fingerprint)):
+                          raise Refused('PATH_OR_FINGERPRINT')
+                  if self.facts.resolve_authorized(request['request_id']) != b:
+                      raise Refused('PRE_CREATE_DRIFT')
+                  self.journal.reserve(b)
+                  # Request has no URL, token, permission, shell, template or checkout field.
+                  # API adapter exposes ONLY create, not arbitrary methods, merge or dispatch.
+                  pr = self.api.create(b)
+                  if (pr.get('app_id') != self.app_id or pr.get('bot_id') != self.bot_id or
+                          pr.get('head_sha') != b.head_sha or pr.get('base_sha') != b.base_sha or
+                          pr.get('repository') != b.repository or pr.get('state') != 'open' or
+                          type(pr.get('number')) is not int or pr['number'] <= 0 or
+                          self.facts.resolve_authorized(request['request_id']) != b):
+                      raise Refused('POST_CREATE_UNCERTAIN_STOP')
+                  self.journal.complete(b)
+                  return {'status': 'PRODUCT_PR_CREATED', 'number': pr['number'], 'head_sha': b.head_sha}
+          
+          
+          def live_adapter():
+              raise Refused('NOT_ADOPTED_NO_LIVE_AUTHORITY_OR_DURABLE_STORE')
+          
+          
+          class ContinuationContract:
+              """Receipt-order model only. Production must authenticate each receipt independently."""
+              steps = ('Local Coding Agent', 'Commit', 'Product PR', 'Validation', 'Governance', 'Continue')
+          
+              def __init__(self, cycle, sha):
+                  self.cycle, self.sha, self.index = cycle, sha, 0
+          
+              def accept(self, receipt, trusted_role):
+                  if (self.index >= len(self.steps) or type(receipt) is not dict or
+                          set(receipt) != {'cycle', 'sha', 'step', 'result'} or
+                          receipt['cycle'] != self.cycle or receipt['sha'] != self.sha or
+                          receipt['step'] != self.steps[self.index] or
+                          trusted_role != receipt['step'] or receipt['result'] != 'PASS'):
+                      raise Refused('CONTINUATION_RECEIPT_REJECTED')
+                  self.index += 1
+                  return self.index == len(self.steps)
+          
+          """All identities, grants, files and event receipts are fabricated test fixtures."""
+          import copy
+          import tempfile
+          import unittest
+          from dataclasses import replace
+          from pathlib import Path
+          
+          
+          class Facts:
+              def __init__(self):
+                  self.binding = Binding('example/private-fixture', 'dummy-grant-1', 'a'*40, 'b'*40,
+                      'c'*40, 'dummy-work', 'dummy-product', (('src/dummy.txt', 'd'*64),), 'e'*64)
+                  self.request = digest({'dummy': 1})
+                  self.valid = True
+                  self.calls = 0
+                  self.drift_at = None
+          
+              def resolve_authorized(self, request):
+                  self.calls += 1
+                  if not self.valid or request != self.request:
+                      raise Refused('OFFICIAL_AUTHORITY_NOT_VERIFIED')
+                  if self.calls == self.drift_at:
+                      return replace(self.binding, head_sha='f'*40)
+                  return self.binding
+          
+          
+          class Api:
+              def __init__(self):
+                  self.calls = 0
+                  self.change = {}
+                  self.fail = False
+          
+              def create(self, binding):
+                  self.calls += 1
+                  if self.fail:
+                      raise Refused('UNKNOWN_NETWORK_OUTCOME')
+                  return dict({'number': 7, 'state': 'open', 'app_id': 101, 'bot_id': 202,
+                      'repository': binding.repository, 'head_sha': binding.head_sha,
+                      'base_sha': binding.base_sha}, **self.change)
+          
+          
+          class ContractTests(unittest.TestCase):
+              def setUp(self):
+                  self.tmp = tempfile.TemporaryDirectory()
+                  self.addCleanup(self.tmp.cleanup)
+                  self.path = str(Path(self.tmp.name)/'journal.db')
+                  self.facts, self.api = Facts(), Api()
+                  self.broker = Publisher(self.facts, self.api, Journal(self.path), 101, 202)
+                  self.request = {'request_id': self.facts.request}
+          
+              def test_accept_exact_bound_publication(self):
+                  self.assertEqual(self.broker.publish(self.request)['status'], 'PRODUCT_PR_CREATED')
+                  self.assertEqual(self.api.calls, 1)
+          
+              def test_request_cannot_supply_privilege_or_code(self):
+                  for field in ('token', 'permissions', 'shell', 'checkout', 'url', 'approval', 'files', 'sha', 'dispatch'):
+                      with self.subTest(field=field), self.assertRaises(Refused):
+                          self.broker.publish(dict(self.request, **{field: 'forged'}))
+                  self.assertEqual(self.api.calls, 0)
+          
+              def test_forged_request(self):
+                  with self.assertRaises(Refused): self.broker.publish({'request_id': 'f'*64})
+                  self.assertEqual(self.api.calls, 0)
+          
+              def test_revoked_or_edited_authority(self):
+                  self.facts.valid = False
+                  with self.assertRaises(Refused): self.broker.publish(self.request)
+                  self.assertEqual(self.api.calls, 0)
+          
+              def test_sha_drift_before_create(self):
+                  self.facts.drift_at = 2
+                  with self.assertRaises(Refused): self.broker.publish(self.request)
+                  self.assertEqual(self.api.calls, 0)
+          
+              def test_sha_drift_after_create_is_not_success(self):
+                  self.facts.drift_at = 3
+                  with self.assertRaises(Refused): self.broker.publish(self.request)
+                  with self.assertRaises(Refused): self.broker.publish(self.request)
+                  self.assertEqual(self.api.calls, 1)
+          
+              def test_replay_after_process_restart(self):
+                  self.broker.publish(self.request)
+                  fresh = Publisher(self.facts, self.api, Journal(self.path), 101, 202)
+                  with self.assertRaises(Refused): fresh.publish(self.request)
+                  self.assertEqual(self.api.calls, 1)
+          
+              def test_unknown_outcome_no_automatic_retry(self):
+                  self.api.fail = True
+                  with self.assertRaises(Refused): self.broker.publish(self.request)
+                  self.api.fail = False
+                  with self.assertRaises(Refused): self.broker.publish(self.request)
+                  self.assertEqual(self.api.calls, 1)
+          
+              def test_wrong_creator(self):
+                  self.api.change = {'bot_id': 999}
+                  with self.assertRaises(Refused): self.broker.publish(self.request)
+          
+              def test_path_and_fingerprint_rejection(self):
+                  for p, sha in (('../escape','d'*64), ('.github/workflows/run.yml','d'*64), ('src/a','bad')):
+                      self.facts.binding = replace(self.facts.binding, files=((p,sha),))
+                      with self.subTest(path=p), self.assertRaises(Refused): self.broker.publish(self.request)
+                  self.assertEqual(self.api.calls, 0)
+          
+              def test_real_adapter_is_disabled(self):
+                  with self.assertRaises(Refused): live_adapter()
+          
+              def test_synthetic_two_cycle_protocol_not_live_product_proof(self):
+                  for cycle in (1,2):
+                      self.facts.binding = replace(self.facts.binding, authorization='dummy-grant-'+str(cycle))
+                      chain = ContinuationContract(cycle, self.facts.binding.head_sha)
+                      for step in chain.steps:
+                          if step == 'Product PR': self.broker.publish(self.request)
+                          done = chain.accept({'cycle':cycle, 'sha':chain.sha, 'step':step, 'result':'PASS'}, step)
+                          self.assertEqual(done, step == 'Continue')
+                  self.assertEqual(self.api.calls, 2)
+          
+              def test_continuation_refuses_skipped_stage(self):
+                  chain = ContinuationContract(1,'c'*40)
+                  with self.assertRaises(Refused):
+                      chain.accept({'cycle':1,'sha':chain.sha,'step':'Continue','result':'PASS'}, 'Continue')
+          
+              def test_continuation_refuses_bad_receipt(self):
+                  for key, value in (('cycle',2), ('sha','f'*40), ('result','FAIL')):
+                      chain = ContinuationContract(1,'c'*40)
+                      receipt={'cycle':1,'sha':chain.sha,'step':'Local Coding Agent','result':'PASS'}
+                      receipt[key]=value
+                      with self.subTest(key=key), self.assertRaises(Refused): chain.accept(receipt,'Local Coding Agent')
+          
+              def test_publisher_cannot_claim_governance_role(self):
+                  chain = ContinuationContract(1,'c'*40)
+                  for step in chain.steps[:4]:
+                      chain.accept({'cycle':1,'sha':chain.sha,'step':step,'result':'PASS'},step)
+                  with self.assertRaises(Refused):
+                      chain.accept({'cycle':1,'sha':chain.sha,'step':'Governance','result':'PASS'},'Product PR')
+          
+          if __name__ == '__main__':
+              suite = unittest.defaultTestLoader.loadTestsFromTestCase(ContractTests)
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              if not result.wasSuccessful() or result.skipped: raise SystemExit(1)
+              print('SYNTHETIC_ONLY; LIVE_PRODUCT_CYCLES=0; REAL_APP_TOKENS=0; SKIPPED=0')
+          
+          PY
