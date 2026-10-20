@@ -1,0 +1,27 @@
+name: WSL trial policy and installer refusal tests
+on:
+  push:
+    branches: [sec02/controller-isolation-validation]
+    paths:
+      - 'probes/Wsl2TrialPolicy.ps1'
+      - 'probes/Prepare-Wsl2Trial.ps1'
+      - 'probes/Get-Wsl2TrialPlan.ps1'
+      - 'tests/Test-WslTrialPolicy.ps1'
+      - 'tests/Test-WslTrialInstaller.ps1'
+      - '.github/workflows/wsl-trial-policy-tests.yml'
+permissions:
+  contents: read
+jobs:
+  policy:
+    runs-on: windows-2025
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Policy acceptance and fail-closed decisions
+        shell: powershell
+        run: ./tests/Test-WslTrialPolicy.ps1
+      - name: Actual script entry with synthetic MSI IO adapters
+        shell: powershell
+        run: ./tests/Test-WslTrialInstaller.ps1

@@ -36,7 +36,7 @@ $session = Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Mana
 if ($session.PSObject.Properties['PendingFileRenameOperations'] -and $session.PendingFileRenameOperations) { $pending += 'PendingFileRenameOperations' }
 $reasons = @()
 if ($featureState -ne 'Enabled') { $reasons += 'VMP_NOT_ALREADY_ENABLED_NO_FEATURE_CHANGE_ALLOWED' }
-if ($pending.Count) { $reasons += 'PENDING_REBOOT_PRESERVE_STOP' }
+if (@($pending | Where-Object { $_ -cne 'PendingFileRenameOperations' }).Count) { $reasons += 'PENDING_REBOOT_PRESERVE_STOP' }
 if (-not $appxKnown) { $reasons += 'ALL_USER_RUNTIME_INVENTORY_UNKNOWN' }
 if ($apps.Count -or $packages.Count) { $reasons += 'EXISTING_RUNTIME_PRESERVE_REBASELINE' }
 if ($distros.Count) { $reasons += 'EXISTING_DISTRIBUTIONS_PRESERVE_STOP' }
@@ -51,6 +51,8 @@ if (Test-Path (Join-Path $env:ProgramData 'TrustedExecution-WslTrial')) { $reaso
     currentUserWslConfigExists=(Test-Path $config)
     currentUserWslConfigSha256=if(Test-Path $config){(Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash.ToLowerInvariant()}else{$null}
     pendingRebootIndicators=$pending;installBlockReasons=$reasons
+    pendingRenameRisk=if($pending -contains 'PendingFileRenameOperations'){'UNRESOLVED_REQUIRES_SCOPED_OWNER_TRIAL_AUTHORITY'}else{'NOT_OBSERVED'}
+    independentLocalInstallAuthorityRequired=$true
     mutationAuthorized=$false;featureActivationAllowed=$false;rebootAllowed=$false
     serviceMutationAuthorized=$false;candidateExecutionAllowed=$false
 } | ConvertTo-Json -Depth 6
