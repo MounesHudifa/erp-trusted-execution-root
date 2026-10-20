@@ -103,8 +103,9 @@ jobs:
                   env={key:os.environ[key] for key in ('SystemRoot','WINDIR','TEMP','TMP','PATH') if key in os.environ}
                   boot=time.monotonic()
                   proc=subprocess.Popen([str(exe),'-m',str(root/'model.gguf'),'--host','127.0.0.1','--port',str(port),'-c','24576','-t','12','-ngl','0','--no-webui'],cwd=exe.parent,env=env,stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
-                  handle=k.OpenProcess(0x100|0x400|0x10,False,proc.pid)
-                  if not handle or not k.SetProcessAffinityMask(handle,3): raise RuntimeError('AFFINITY_FAILED')
+                  handle=k.OpenProcess(0x200|0x400|0x10,False,proc.pid)
+                  if not handle: raise RuntimeError('PROCESS_HANDLE_'+str(ctypes.get_last_error()))
+                  if not k.SetProcessAffinityMask(handle,3): raise RuntimeError('AFFINITY_'+str(ctypes.get_last_error()))
                   mask=ctypes.c_size_t();sysmask=ctypes.c_size_t()
                   if not k.GetProcessAffinityMask(handle,ctypes.byref(mask),ctypes.byref(sysmask)) or mask.value!=3: raise RuntimeError('AFFINITY_NOT_VERIFIED')
                   monitor=threading.Thread(target=watch,daemon=True);monitor.start()
