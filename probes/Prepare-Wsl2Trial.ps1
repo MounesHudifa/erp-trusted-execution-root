@@ -35,41 +35,24 @@ if ($Action -eq 'Rollback') {
     Assert-Package
     $distros = ((& wsl.exe --list --quiet 2>$null) -join "`n").Replace([string][char]0,'').Trim()
     if ($distros -and $distros -notmatch 'no installed distributions') { throw 'DISTROS_EXIST_REFUSE_GLOBAL_ROLLBACK' }
+    if ($r.vmpEnabledByThisTrial) { throw 'LEGACY_FEATURE_ROLLBACK_REQUIRES_SEPARATE_AUTHORITY' }
     if ($r.installedByThisTrial) { $code = Run-Msi '/x'; $r.installedByThisTrial = $false; Write-Receipt $r }
-    if ($r.vmpEnabledByThisTrial) {
-        $result = Disable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -NoRestart
-        $r.vmpEnabledByThisTrial = $false
-        Write-Receipt $r
-    }
     # Retain receipt and package for audit. Do not erase records or reboot.
     Write-Output 'OWN_TRIAL_PREREQUISITES_ROLLED_BACK_REBOOT_NOT_PERFORMED'
     return
 }
-$feature = Get-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform
-$apps = @(Get-AppxPackage -Name MicrosoftCorporationII.WindowsSubsystemForLinux)
-$packages = @(Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*' -ErrorAction SilentlyContinue |
-    Where-Object { $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -match 'Windows Subsystem for Linux' })
-$hasWsl = ($apps.Count -gt 0 -or $packages.Count -gt 0)
-$plan = [ordered]@{
-    host=$ExpectedComputerName; action=$Action; packageUrl=$url; packageSha256=$hash
-    vmpBefore=[string]$feature.State; existingWsl=$hasWsl
-    rebootPerformed=$false; changesAuthorizedByScript=$false
-    candidateExecutionAllowed=$false; runnerChangesAllowed=$false
-}
-if ($Action -eq 'Plan') { $plan | ConvertTo-Json; return }
-if ($hasWsl -or (Test-Path $root)) { throw 'EXISTING_RUNTIME_OR_TRIAL_PRESERVED_STOP_FOR_EXACT_REBASELINE' }
-if ($feature.State -notin @('Enabled','Disabled')) { throw 'FEATURE_PENDING_OR_UNKNOWN_STOP' }
+$plan = (& (Join-Path $PSScriptRoot 'Get-Wsl2TrialPlan.ps1') -ExpectedComputerName $ExpectedComputerName) | ConvertFrom-Json
+if ($Action -eq 'Plan') { $plan | ConvertTo-Json -Depth 6; return }
+# Fail before downloads, receipts, MSI, or feature changes. No attempt is made
+# to predict a reboot-free VMP activation; Disabled/Unknown/Pending all stop.
+if ($plan.vmpState -ne 'Enabled') { throw 'VMP_NOT_ALREADY_ENABLED_NO_PARTIAL_CHANGE' }
+if ($plan.installBlockReasons.Count) { throw ('INSTALL_PREFLIGHT_BLOCKED:' + ($plan.installBlockReasons -join ',')) }
 New-Item -ItemType Directory -Path $root | Out-Null
 $r = [ordered]@{host=$ExpectedComputerName;packageSha256=$hash;existingWsl=$false;
-    vmpBefore=[string]$feature.State;vmpEnabledByThisTrial=$false;installedByThisTrial=$false}
+    vmpBefore=[string]$plan.vmpState;vmpEnabledByThisTrial=$false;installedByThisTrial=$false}
 Write-Receipt $r
 Invoke-WebRequest -UseBasicParsing -TimeoutSec 180 -Uri $url -OutFile $msi
 Assert-Package
-if ($feature.State -eq 'Disabled') {
-    $result = Enable-WindowsOptionalFeature -Online -FeatureName VirtualMachinePlatform -All -NoRestart
-    $r.vmpEnabledByThisTrial = $true
-    Write-Receipt $r
-}
 $code = Run-Msi '/i'
 $r.installedByThisTrial = $true
 Write-Receipt $r

@@ -69,6 +69,39 @@ print('HOST_NETWORK_CREDENTIAL_WRITE_DENIAL=PASS')
             self.assertIn(b"FRESH=PASS", result["output"])
             self.assertFalse(Path(result["disposableWorkspace"]).exists())
 
+    def test_actual_confined_mount_and_synthetic_host_file_denied(self):
+        # Canary is created in this disposable Linux test environment only.
+        # No Windows drive is mounted and no real host file is opened.
+        with tempfile.TemporaryDirectory(prefix='synthetic-host-canary-') as outer:
+            canary = Path(outer) / 'dummy.txt'
+            canary.write_text('public synthetic canary')
+            script = '''import ctypes, errno, pathlib
+canary = pathlib.Path(__CANARY__)
+assert not canary.exists()
+try:
+    canary.read_bytes()
+except (FileNotFoundError, PermissionError):
+    pass
+else:
+    raise AssertionError('synthetic outside file accessible')
+for path in ('/mnt/c', '/mnt/wsl', '/mnt/wslg', '/dev/dxg', '/run/docker.sock'):
+    assert not pathlib.Path(path).exists(), path
+target = pathlib.Path('/work/mount-test')
+target.mkdir()
+libc = ctypes.CDLL(None, use_errno=True)
+libc.mount.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_char_p, ctypes.c_ulong, ctypes.c_void_p]
+libc.mount.restype = ctypes.c_int
+for source, fs, flags in ((b'tmpfs', b'tmpfs', 0), (b'/candidate', None, 4096)):
+    ctypes.set_errno(0)
+    result = libc.mount(source, bytes(target), fs, flags, None)
+    assert result == -1 and ctypes.get_errno() == errno.EPERM, (result, ctypes.get_errno())
+print('CONFINED_MOUNT_AND_SYNTHETIC_HOST_FILE_DENIAL=PASS')
+'''.replace('__CANARY__', repr(str(canary)))
+            result = self.run_source(script)
+            self.assertIn(b'CONFINED_MOUNT_AND_SYNTHETIC_HOST_FILE_DENIAL=PASS', result['output'])
+            self.assertEqual(canary.read_text(), 'public synthetic canary')
+            self.assertFalse(Path(result['disposableWorkspace']).exists())
+
     def test_actual_timeout_kills_sandbox(self):
         with self.assertRaisesRegex(c.Denied, "ISOLATED_VALIDATION_TIMEOUT"):
             self.run_source("import time\ntime.sleep(60)\n", timeout=1)

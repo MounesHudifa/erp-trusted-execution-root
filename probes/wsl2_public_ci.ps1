@@ -17,6 +17,10 @@ if ($DeviceTrial) {
     if (-not $ExpectedComputerName -or $env:COMPUTERNAME -cne $ExpectedComputerName) { throw 'DEVICE_IDENTITY_MISMATCH' }
     if (-not $SourceRoot -or -not (Test-Path (Join-Path $SourceRoot 'trustroot/controller.py'))) { throw 'PINNED_PUBLIC_SOURCE_REQUIRED' }
     if (Test-Path (Join-Path $env:USERPROFILE '.wslconfig')) { throw 'EXISTING_WSL_CONFIG_PRESERVED_STOP' }
+    $devicePlan = (& (Join-Path $PSScriptRoot 'Get-Wsl2TrialPlan.ps1') -ExpectedComputerName $ExpectedComputerName) | ConvertFrom-Json
+    if ($devicePlan.vmpState -ne 'Enabled' -or -not $devicePlan.allUserAppxInventoryKnown) { throw 'DEVICE_PREREQUISITES_UNKNOWN_OR_NOT_READY' }
+    if ($devicePlan.pendingRebootIndicators.Count) { throw 'DEVICE_PENDING_REBOOT_PRESERVE_STOP' }
+    if ($devicePlan.currentUserDistributions.Count) { throw 'EXISTING_DEVICE_DISTROS_PRESERVED_STOP' }
 } elseif ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or
           $env:TRUSTROOT_DISPOSABLE_PUBLIC_VM -ne '1') {
     throw 'PUBLIC_DISPOSABLE_CI_OR_SEPARATELY_AUTHORIZED_DEVICE_TRIAL_ONLY'
@@ -28,6 +32,7 @@ $config = Join-Path $env:USERPROFILE '.wslconfig'
 $originalConfig = if (Test-Path $config) { [IO.File]::ReadAllBytes($config) } else { $null }
 $registered = $false
 $configChanged = $false
+$writtenConfigHash = $null
 New-Item -ItemType Directory -Path $work -ErrorAction Stop | Out-Null
 
 function Invoke-Guest([string]$Script) {
@@ -133,6 +138,7 @@ EOF
 '@
     [IO.File]::WriteAllText($config, "[wsl2]`nmemory=3GB`nprocessors=2`nswap=0`nnetworkingMode=none`nlocalhostForwarding=false`ndnsTunneling=false`nautoProxy=false`nguiApplications=false`nnestedVirtualization=false`n", [Text.UTF8Encoding]::new($false))
     $configChanged = $true
+    $writtenConfigHash = (Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash
     & wsl.exe --terminate $distro
     if ($LASTEXITCODE -ne 0) { throw 'TERMINATE_FAILED' }
     # No other distro exists in this disposable public VM (checked above).
@@ -154,16 +160,8 @@ for target in [('192.0.2.1',443), ('1.1.1.1',443)]:
     finally:s.close()
 print('WSL2_NETWORK_DENIAL=PASS')
 PY
-# Deliberate negative control: automount=false does NOT prohibit a root manual mount.
-# Inspect only existence of a public Windows system directory, never file contents.
-mkdir -p /tmp/public-mount-probe
-if mount -t drvfs C: /tmp/public-mount-probe; then
-  test -d /tmp/public-mount-probe/Windows
-  umount /tmp/public-mount-probe
-  echo WSL2_AUTOMOUNT_FALSE_IS_NOT_SECURITY_BOUNDARY=CONFIRMED
-else
-  echo WSL2_MANUAL_MOUNT_RESULT=DENIED_IN_THIS_RUNTIME
-fi
+# Mount-denial probes run only inside the capability-dropped candidate namespace.
+# They use synthetic Linux paths, never a Windows drive or a host file.
 cd /opt/probe
 python3 -I -B scripts/build_probe_runtime.py /tmp/public-probe-runtime
 TRUSTROOT_REQUIRE_ISOLATION=1 TRUSTROOT_PROBE_RUNTIME=/tmp/public-probe-runtime python3 -B - <<'PY'
@@ -184,12 +182,18 @@ PY
         if ($LASTEXITCODE -ne 0) { throw 'TEST_DISTRO_DESTRUCTION_FAILED' }
         $remaining = ((& wsl.exe --list --quiet) -join "`n").Replace([string][char]0, '')
         if ($remaining.Contains($distro)) { throw 'TEST_DISTRO_PERSISTED' }
+        $running = ((& wsl.exe --list --running --quiet) -join "`n").Replace([string][char]0, '')
+        if ($running.Contains($distro)) { throw 'TEST_DISTRO_STILL_RUNNING' }
         Write-Output 'DISPOSABLE_WSL2_DISTRO_DESTROYED=YES'
     }
     if ($configChanged) {
+        if (-not (Test-Path -LiteralPath $config) -or (Get-FileHash -LiteralPath $config -Algorithm SHA256).Hash -ne $writtenConfigHash) { throw 'CONFIG_CHANGED_EXTERNALLY_PRESERVE_STOP' }
         if ($null -ne $originalConfig) { [IO.File]::WriteAllBytes($config,$originalConfig) }
         else { Remove-Item -LiteralPath $config }
     }
     # Only this job-created directory; never a pre-existing/user distribution.
     Remove-Item -LiteralPath $work -Recurse -Force
+    if (Test-Path -LiteralPath $work) { throw 'TRIAL_DIRECTORY_PERSISTED' }
+    if ($configChanged -and $null -eq $originalConfig -and (Test-Path -LiteralPath $config)) { throw 'TRIAL_CONFIG_PERSISTED' }
+    Write-Output 'TRIAL_DIRECTORY_AND_CONFIG_CLEANUP_VERIFIED=YES'
 }

@@ -67,3 +67,17 @@ jobs:
           }
           if (-not $denied) { throw 'WRONG_HOST_NOT_REJECTED' }
           ./probes/Prepare-Wsl2Trial.ps1 -Action Plan -ExpectedComputerName $env:COMPUTERNAME
+          # Invoke the actual Install entry with Disabled VMP evidence. Verify
+          # rejection occurs before any trial directory/receipt or MSI change.
+          $trialRoot = Join-Path $env:ProgramData 'TrustedExecution-WslTrial'
+          if (Test-Path $trialRoot) { throw 'PUBLIC_TEST_PREIMAGE_NOT_EMPTY' }
+          function global:Get-WindowsOptionalFeature { [pscustomobject]@{State='Disabled'} }
+          try {
+            $refused = $false
+            try { ./probes/Prepare-Wsl2Trial.ps1 -Action Install -ExpectedComputerName $env:COMPUTERNAME } catch {
+              if ($_.Exception.Message -ne 'VMP_NOT_ALREADY_ENABLED_NO_PARTIAL_CHANGE') { throw }
+              $refused = $true
+            }
+            if (-not $refused -or (Test-Path $trialRoot)) { throw 'VMP_DISABLED_CHANGED_HOST' }
+            Write-Output 'VMP_DISABLED_INSTALL_REFUSED_WITHOUT_PARTIAL_CHANGE=PASS'
+          } finally { Remove-Item Function:\Get-WindowsOptionalFeature }
