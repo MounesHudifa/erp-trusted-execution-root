@@ -1,3 +1,4 @@
+# Public dummy measurement only; no model inference or private source.
 name: Ephemeral Windows dummy capacity
 on:
   push:
