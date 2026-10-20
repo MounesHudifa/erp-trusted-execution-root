@@ -4,6 +4,12 @@ on:
   push:
     branches: [main, sec02/controller-isolation-validation]
     paths-ignore:
+      - 'probes/Wsl2TrialPolicy.ps1'
+      - 'probes/Prepare-Wsl2Trial.ps1'
+      - 'probes/Get-Wsl2TrialPlan.ps1'
+      - 'tests/Test-WslTrialPolicy.ps1'
+      - 'tests/Test-WslTrialInstaller.ps1'
+      - '.github/workflows/wsl-trial-policy-tests.yml'
       - 'probes/PendingRename-Summary.ps1'
       - 'tests/Test-PendingRenamePrivacy.ps1'
       - '.github/workflows/pending-rename-tests.yml'
