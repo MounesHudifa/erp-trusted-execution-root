@@ -151,12 +151,19 @@ print('CONFINED_MOUNT_AND_SYNTHETIC_HOST_FILE_DENIAL=PASS')
                     key = path.rsplit('/', 1)[1]
                     return {"sha": key, "encoding": "base64", "content": base64.b64encode(blobs[key]).decode()}
                 return original(path)
-            result = c.validate_once(api, runtime=self.runtime, repository=gh.repo,
-                                     main=gh.main, candidate=gh.candidate, control=gh.control,
-                                     pr=gh.pr_number, issue=gh.approval_issue,
-                                     installed_root_sha=fixture.root, runtime_digest=self.runtime_id,
-                                     command=fixture.command)
-            self.assertIn(b"FULL_SYNTHETIC_ADMISSION_AND_ISOLATION=PASS", result["output"])
-            self.assertFalse(Path(result["disposableWorkspace"]).exists())
+            args = dict(runtime=self.runtime, repository=gh.repo,
+                        main=gh.main, candidate=gh.candidate, control=gh.control,
+                        pr=gh.pr_number, issue=gh.approval_issue,
+                        installed_root_sha=fixture.root, runtime_digest=self.runtime_id,
+                        command=fixture.command)
+            if 'microsoft' in c.platform.release().lower() or 'wsl' in c.platform.release().lower():
+                with patch.object(c, 'read_candidate', side_effect=AssertionError('must not materialize')):
+                    with self.assertRaisesRegex(c.Denied, 'WSL2_NOT_A_WINDOWS_HOST_SECURITY_BOUNDARY'):
+                        c.validate_once(api, **args)
+                print('WSL_GOVERNED_EXECUTION_REFUSED_BEFORE_MATERIALIZATION=PASS')
+            else:
+                result = c.validate_once(api, **args)
+                self.assertIn(b"FULL_SYNTHETIC_ADMISSION_AND_ISOLATION=PASS", result["output"])
+                self.assertFalse(Path(result["disposableWorkspace"]).exists())
         finally:
             fixture.doCleanups()

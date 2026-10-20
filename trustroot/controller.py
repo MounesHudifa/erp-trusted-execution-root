@@ -10,6 +10,7 @@ import base64
 import hashlib
 import json
 import os
+import platform
 from pathlib import Path
 import resource
 import signal
@@ -244,6 +245,8 @@ def validate_once(api: Callable, *, runtime: Path, timeout: float = 15, **identi
     Must remain outside private workflows and candidate-writable paths. This
     function neither installs the controller nor grants production authority.
     """
+    if 'microsoft' in platform.release().lower() or 'wsl' in platform.release().lower():
+        raise Denied('WSL2_NOT_A_WINDOWS_HOST_SECURITY_BOUNDARY')
     permit = admit(api, **identity)
     source = read_candidate(api, permit)
     if admit(api, **identity) != permit:

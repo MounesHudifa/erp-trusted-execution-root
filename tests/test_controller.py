@@ -82,6 +82,13 @@ class ControllerTests(unittest.TestCase):
             self.denied("PRIVATE_RUNNER_SCHEDULING_BOUNDARY_OPEN")
         self.assertEqual(self.gh.main_read_count, 0)
 
+    def test_actual_entry_refuses_wsl_before_github_or_candidate_io(self):
+        for release in ('6.6.0-microsoft-standard-WSL2', 'WSL-custom'):
+            with patch.object(c.platform, 'release', return_value=release):
+                with patch.object(c, 'admit', side_effect=AssertionError('must not admit')):
+                    with self.assertRaisesRegex(c.Denied, 'WSL2_NOT_A_WINDOWS_HOST_SECURITY_BOUNDARY'):
+                        c.validate_once(None, runtime=Path('/unused'))
+
     def test_inconsistent_runner_inventory_denies(self):
         self.runners = {"total_count": 0, "runners": [{"status": "offline"}]}
         self.denied("PRIVATE_RUNNER_SCHEDULING_BOUNDARY_OPEN")
