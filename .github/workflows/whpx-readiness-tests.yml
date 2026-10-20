@@ -1,0 +1,24 @@
+name: WHPX Readiness Policy Tests
+on:
+  push:
+    branches: [sec02/controller-isolation-validation]
+    paths:
+      - 'probes/Get-WhpxReadiness.ps1'
+      - 'tests/Test-WhpxReadiness.ps1'
+      - '.github/workflows/whpx-readiness-tests.yml'
+permissions:
+  contents: read
+jobs:
+  read-only-policy:
+    runs-on: windows-2025
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Positive and negative capability decisions without guest execution
+        shell: powershell
+        run: ./tests/Test-WhpxReadiness.ps1
+      - name: Real read-only feature inventory on public disposable host only
+        shell: powershell
+        run: ./probes/Get-WhpxReadiness.ps1
