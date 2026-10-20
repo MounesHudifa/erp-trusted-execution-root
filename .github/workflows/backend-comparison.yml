@@ -3,28 +3,12 @@ name: Public Backend Comparison - Real Guests
 on:
   push:
     branches: [sec02/controller-isolation-validation]
-    paths-ignore:
-      - 'trustroot/hosted_trial.py'
-      - 'tests/test_hosted_trial.py'
-      - '.github/workflows/hosted-trial-contract-tests.yml'
-      - 'probes/Get-WhpxReadiness.ps1'
-      - 'tests/Test-WhpxReadiness.ps1'
-      - '.github/workflows/whpx-readiness-tests.yml'
-      - 'probes/Interactive-WslInstall.ps1'
-      - 'tests/Test-InteractiveWslInstall.ps1'
-      - '.github/workflows/interactive-install-tests.yml'
-      - 'probes/Wsl2TrialPolicy.ps1'
-      - 'probes/Prepare-Wsl2Trial.ps1'
-      - 'probes/Get-Wsl2TrialPlan.ps1'
-      - 'tests/Test-WslTrialPolicy.ps1'
-      - 'tests/Test-WslTrialInstaller.ps1'
-      - '.github/workflows/wsl-trial-policy-tests.yml'
-      - 'probes/PendingRename-Summary.ps1'
-      - 'tests/Test-PendingRenamePrivacy.ps1'
-      - '.github/workflows/pending-rename-tests.yml'
-      - 'probes/Interactive-ReadOnlyPlan.ps1'
-      - 'tests/Test-InteractivePlan.ps1'
-      - '.github/workflows/interactive-plan-tests.yml'
+    paths:
+      - 'trustroot/backends.py'
+      - 'probes/qemu_live.py'
+      - 'probes/wsl2_public_ci.ps1'
+      - 'scripts/build_probe_runtime.py'
+      - 'tests/test_backends.py'
   workflow_dispatch:
 
 permissions:
