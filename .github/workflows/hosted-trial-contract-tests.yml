@@ -369,3 +369,434 @@ jobs:
               print('SYNTHETIC_ONLY; LIVE_PRODUCT_CYCLES=0; REAL_APP_TOKENS=0; SKIPPED=0')
           
           PY
+
+  publication-transport-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Real transport implementation against dummy GitHub server
+        shell: bash
+        run: |
+          python3 -I -B - <<'PY'
+          """Restricted GitHub publication transports. No command execution or token minting.
+          
+          Roles are separate objects and credentials. Installation grants must be supplied
+          by the trusted App-token issuer, never by a request payload. This module does not
+          make an untrusted caller trustworthy; deployment isolation is an adoption gate.
+          """
+          from __future__ import annotations
+          import base64
+          import copy
+          import hashlib
+          import json
+          import re
+          import urllib.request
+          import urllib.error
+          from urllib.parse import quote, urlencode
+          
+          
+          class PublicationRefused(Exception):
+              """Only fixed codes cross the logging boundary."""
+          
+          
+          class UnknownOutcome(PublicationRefused):
+              pass
+          
+          
+          def canonical(value):
+              return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+          
+          
+          def digest(value):
+              return hashlib.sha256(canonical(value).encode()).hexdigest()
+          
+          
+          def sha(value):
+              if not isinstance(value, str) or not re.fullmatch('[0-9a-f]{40}', value):
+                  raise PublicationRefused('INVALID_SHA')
+              return value
+          
+          
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  raise PublicationRefused('REDIRECT_DENIED')
+          
+          
+          class Http:
+              """HTTPS GitHub only; no retries, response bodies or credentials in errors."""
+              def __init__(self, token):
+                  if not isinstance(token, str) or not token:
+                      raise PublicationRefused('CREDENTIAL_MISSING')
+                  self._token = token
+                  self._opener = urllib.request.build_opener(NoRedirect())
+          
+              def call(self, method, path, data=None):
+                  if not path.startswith('/') or path.startswith('//') or '\\' in path:
+                      raise PublicationRefused('ENDPOINT_DENIED')
+                  req = urllib.request.Request('https://api.github.com'+path,
+                      data=None if data is None else canonical(data).encode(), method=method,
+                      headers={'Authorization':'Bearer '+self._token,
+                               'Accept':'application/vnd.github+json',
+                               'Content-Type':'application/json', 'X-GitHub-Api-Version':'2022-11-28'})
+                  try:
+                      with self._opener.open(req, timeout=30) as response:
+                          raw = response.read(8*1024*1024+1)
+                      if len(raw)>8*1024*1024: raise PublicationRefused('RESPONSE_LIMIT')
+                      return json.loads(raw) if raw else None
+                  except urllib.error.HTTPError as exc:
+                      # All writes are reconciled; even a 5xx may follow a committed write.
+                      if method != 'GET': raise UnknownOutcome('WRITE_NOT_CONFIRMED') from None
+                      raise PublicationRefused('READ_HTTP_'+str(exc.code)) from None
+                  except (OSError, ValueError):
+                      if method != 'GET': raise UnknownOutcome('WRITE_NOT_CONFIRMED') from None
+                      raise PublicationRefused('READ_UNAVAILABLE') from None
+          
+          
+          class Reader:
+              def __init__(self, http, repository):
+                  if not re.fullmatch('[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+', repository):
+                      raise PublicationRefused('REPOSITORY')
+                  self.http, self.repository = http, repository
+                  self.root = '/repos/'+repository
+          
+              def head(self, branch):
+                  return sha(self.http.call('GET', self.root+'/git/ref/heads/'+quote(branch,safe=''))['object']['sha'])
+          
+              def json_file(self, path, commit):
+                  sha(commit)
+                  result = self.http.call('GET', self.root+'/contents/'+quote(path,safe='/')+'?ref='+commit)
+                  if result.get('encoding') != 'base64': raise PublicationRefused('FILE_ENCODING')
+                  try: return json.loads(base64.b64decode(result['content'], validate=False))
+                  except (ValueError, KeyError): raise PublicationRefused('FILE_INVALID') from None
+          
+              def comment(self, comment_id):
+                  if type(comment_id) is not int or comment_id < 1: raise PublicationRefused('COMMENT_ID')
+                  return self.http.call('GET', self.root+'/issues/comments/'+str(comment_id))
+          
+          
+          class ControlCAS:
+              """One GraphQL expectedHeadOid commit. Never force, retry or change another file."""
+              def __init__(self, reader, writer, branch, state_path):
+                  self.reader, self.writer = reader, writer
+                  self.branch, self.state_path = branch, state_path
+          
+              def read(self):
+                  head = self.reader.head(self.branch)
+                  return head, self.reader.json_file(self.state_path, head)
+          
+              def update(self, expected, before, after):
+                  sha(expected)
+                  if after.get('stateVersion') != before.get('stateVersion', -1)+1:
+                      raise PublicationRefused('STATE_VERSION')
+                  # Only the publication ledger and stateVersion may change. In particular,
+                  # activeAuthorization and consumedByReceiptCommentId must remain identical.
+                  a, b = copy.deepcopy(before), copy.deepcopy(after)
+                  for value in (a,b):
+                      value.pop('stateVersion',None); value.pop('publicationRequests',None)
+                  if a != b: raise PublicationRefused('CONTROL_SCOPE')
+                  live_head, live = self.read()
+                  if live_head != expected or live != before: raise PublicationRefused('CAS_CONFLICT')
+                  query = 'mutation($input:CreateCommitOnBranchInput!){createCommitOnBranch(input:$input){commit{oid}}}'
+                  data = {'query':query, 'variables':{'input':{
+                      'branch':{'repositoryNameWithOwner':self.reader.repository,'refName':self.branch},
+                      'expectedHeadOid':expected,
+                      'message':{'headline':'control: bounded publication ledger transition'},
+                      'fileChanges':{'additions':[{'path':self.state_path,
+                          'contents':base64.b64encode((canonical(after)+'\n').encode()).decode()}]}}}}
+                  result = self.writer.call('POST','/graphql',data)
+                  if result.get('errors'): raise PublicationRefused('CAS_REJECTED')
+                  try: committed = sha(result['data']['createCommitOnBranch']['commit']['oid'])
+                  except (KeyError, TypeError): raise UnknownOutcome('CAS_RESPONSE_UNCERTAIN') from None
+                  head, actual = self.read()
+                  if head != committed or actual != after: raise UnknownOutcome('CAS_VERIFY_UNCERTAIN')
+                  return committed
+          
+              def transition(self, snapshot, key, old_status, record):
+                  head, state = snapshot
+                  before = copy.deepcopy(state)
+                  existing = before.get('publicationRequests',{}).get(key)
+                  if (None if existing is None else existing.get('status')) != old_status:
+                      raise PublicationRefused('PUBLICATION_TRANSITION_CONFLICT')
+                  after = copy.deepcopy(before)
+                  after.setdefault('publicationRequests',{})[key] = copy.deepcopy(record)
+                  after['stateVersion'] += 1
+                  new_head = self.update(head,before,after)
+                  return new_head,after
+          
+          
+          class PullRequests:
+              """PR-only App credential. No Contents, Actions, Administration or generic API escape."""
+              def __init__(self, http, repository, app_id, bot_id, token_grants):
+                  if token_grants != {'pull_requests':'write','metadata':'read'}:
+                      raise PublicationRefused('APP_GRANT_EXCESS_OR_MISSING')
+                  if type(app_id) is not int or app_id<=0 or type(bot_id) is not int or bot_id<=0:
+                      raise PublicationRefused('APP_IDENTITY_UNPINNED')
+                  self._http, self.repository, self.app_id, self.bot_id = http,repository,app_id,bot_id
+                  self.root='/repos/'+repository+'/pulls'
+          
+              def discover(self, binding):
+                  results=[]
+                  for page in range(1,101):
+                      query=urlencode({'state':'all','head':self.repository.split('/')[0]+':'+binding['work_branch'],
+                                       'base':binding['target_branch'],'per_page':100,'page':page})
+                      values=self._http.call('GET',self.root+'?'+query)
+                      if type(values) is not list: raise PublicationRefused('PR_DISCOVERY_INVALID')
+                      results.extend(values)
+                      if len(values)<100: return results
+                  raise PublicationRefused('PR_DISCOVERY_INCOMPLETE')
+          
+              def get(self, number):
+                  if type(number) is not int or number<=0: raise PublicationRefused('PR_NUMBER')
+                  return self._http.call('GET',self.root+'/'+str(number))
+          
+              def create(self, binding):
+                  return self._http.call('POST',self.root,{
+                      'title':binding['title'],'body':binding['body'],
+                      'head':binding['work_branch'],'base':binding['target_branch']})
+          
+              def close_created(self, number):
+                  self.get(number)  # ID validation and existence; caller owns create receipt.
+                  value=self._http.call('PATCH',self.root+'/'+str(number),{'state':'closed'})
+                  if value.get('number')!=number or value.get('state')!='closed':
+                      raise UnknownOutcome('COMPENSATION_UNCONFIRMED')
+          
+              def verify(self, pr, binding, *, require_app):
+                  for part, ref, commit in [('head',binding['work_branch'],binding['candidate_sha']),
+                                            ('base',binding['target_branch'],binding['base_sha'])]:
+                      obj=pr.get(part,{})
+                      if (obj.get('ref')!=ref or obj.get('sha')!=commit or
+                              obj.get('repo',{}).get('full_name')!=self.repository):
+                          raise PublicationRefused('PR_BINDING_MISMATCH')
+                  if pr.get('state')!='open': raise PublicationRefused('PR_NOT_OPEN')
+                  lines=str(pr.get('body','')).splitlines()
+                  for prefix in ('- Authorization: ', '- Authorization record: '):
+                      if [x for x in lines if x.startswith(prefix)] != [x for x in binding['body'].splitlines() if x.startswith(prefix)]:
+                          raise PublicationRefused('PR_AUTHORITY_MARKERS')
+                  if require_app and (pr.get('user',{}).get('id')!=self.bot_id or
+                          pr.get('performed_via_github_app',{}).get('id')!=self.app_id):
+                      raise PublicationRefused('PR_APP_IDENTITY')
+          
+          
+          class PublicationService:
+              """Verifier always rereads canonical sources. No candidate data executes here."""
+              def __init__(self, verifier, journal, prs):
+                  self.verifier,self.journal,self.prs=verifier,journal,prs
+          
+              def run(self):
+                  snapshot=self.journal.read()
+                  binding=self.verifier.verify(snapshot)
+                  key=digest({'repository':binding['repository'],'authorization':binding['authorization_id']})
+                  fingerprint=digest(binding)
+                  existing=snapshot[1].get('publicationRequests',{}).get(key)
+                  if existing and existing['binding_digest']!=fingerprint:
+                      raise PublicationRefused('AUTHORIZATION_REUSE_OR_BINDING_DRIFT')
+                  if existing and existing['status'] in ('COMPENSATED','FAILED','STOPPED'):
+                      raise PublicationRefused('PREVIOUS_PUBLICATION_TERMINAL')
+                  matches=[]
+                  for summary in self.prs.discover(binding):
+                      if summary.get('head',{}).get('sha')==binding['candidate_sha']:
+                          matches.append(self.prs.get(summary['number']))
+                  if len(matches)>1: raise PublicationRefused('PR_AMBIGUOUS')
+                  if matches:
+                      pr=matches[0]
+                      self.prs.verify(pr,binding,require_app=existing is not None and existing.get("origin")!="EXISTING_AUTHORIZED_PR")
+                      self.verifier.verify_same(snapshot,binding)
+                      if existing is None:
+                          rec={'status':'PUBLISHED','binding_digest':fingerprint,'binding':binding,
+                               'pr':pr['number'],'origin':'EXISTING_AUTHORIZED_PR'}
+                          snapshot=self.journal.transition(snapshot,key,None,rec)
+                      elif existing['status']!='PUBLISHED':
+                          rec=dict(existing,status='PUBLISHED',pr=pr['number'])
+                          snapshot=self.journal.transition(snapshot,key,existing['status'],rec)
+                      return self.result(binding,pr['number'],snapshot,'PRODUCT_PR_PRESENT')
+                  if existing and existing['status']!='QUEUED':
+                      # RESERVED/SENDING/UNKNOWN after process loss cannot safely POST again.
+                      raise PublicationRefused('UNKNOWN_OUTCOME_RECONCILE_ONLY')
+                  record={'status':'RESERVED','binding_digest':fingerprint,'binding':binding,'pr':None}
+                  snapshot=self.journal.transition(snapshot,key,'QUEUED' if existing else None,record)
+                  self.verifier.verify_same(snapshot,binding)
+                  record=dict(record,status='SENDING')
+                  snapshot=self.journal.transition(snapshot,key,'RESERVED',record)
+                  self.verifier.verify_same(snapshot,binding)
+                  try:
+                      created=self.prs.create(binding)
+                  except Exception:
+                      # SENDING is durable evidence; never retry the POST or leak API errors.
+                      raise UnknownOutcome('PR_CREATE_UNCERTAIN_RECONCILE_ONLY') from None
+                  number=created.get('number') if type(created) is dict else None
+                  if type(number) is not int or number<=0: raise UnknownOutcome('PR_CREATE_RESPONSE_UNCERTAIN')
+                  try:
+                      self.prs.verify(created,binding,require_app=True)
+                      self.prs.verify(self.prs.get(number),binding,require_app=True)
+                      self.verifier.verify_same(snapshot,binding)
+                  except Exception:
+                      # Close ONLY the PR ID returned by this invocation's create request.
+                      try: self.prs.close_created(number)
+                      except Exception: raise UnknownOutcome('COMPENSATION_UNCONFIRMED') from None
+                      current=self.journal.read()
+                      current_rec=current[1].get('publicationRequests',{}).get(key)
+                      if current_rec != record: raise UnknownOutcome('COMPENSATED_LEDGER_CONFLICT')
+                      self.journal.transition(current,key,'SENDING',dict(record,status='COMPENSATED',pr=number))
+                      raise PublicationRefused('POSTCONDITION_FAILED_COMPENSATED') from None
+                  snapshot=self.journal.transition(snapshot,key,'SENDING',dict(record,status='PUBLISHED',pr=number))
+                  return self.result(binding,number,snapshot,'PRODUCT_PR_CREATED')
+          
+              @staticmethod
+              def result(binding,number,snapshot,status):
+                  return {'status':status,'authorizationId':binding['authorization_id'],
+                      'candidateSha':binding['candidate_sha'],'pullRequestNumber':number,
+                      'controlHead':snapshot[0],'stateVersion':snapshot[1]['stateVersion'],
+                      'productSha':binding['base_sha'],'validationNeeded':True}
+          
+          import unittest
+          from urllib.parse import urlsplit, parse_qs
+          class Server:
+              def __init__(self):
+                  self.control='a'*40;self.main='1'*40;self.base='b'*40;self.candidate='c'*40
+                  self.state={'stateVersion':1,'activeAuthorization':{'authorizationId':'grant-1',
+                      'commentId':11,'status':'IN_PROGRESS','consumedByReceiptCommentId':None},'preserved':{'value':42}}
+                  self.policy={'roles':'dummy'}
+                  self.authority={'id':11,'user':{'id':12},'performed_via_github_app':{'id':13},
+                      'body':'dummy-official-authority','created_at':'same','updated_at':'same'}
+                  raw=b'dummy file\n';self.blob=hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+                  self.blob_raw=raw;self.path='src/dummy.txt';self.mode='100644';self.truncated=False
+                  self.prs=[];self.calls=[];self.creates=0;self.cas_count=0
+                  self.fail_cas_at=None;self.lose_post=False;self.reject_post=False;self.bad_app=False
+                  self.drift_post=False;self.close_fail=False;self.compare_ahead=True
+          
+              def client(self,role):
+                  server=self
+                  class Client:
+                      def call(self,method,path,data=None): return server.call(role,method,path,data)
+                  return Client()
+          
+              def call(self,role,method,path,data=None):
+                  self.calls.append((role,method,path,copy.deepcopy(data)))
+                  if role=='app' and not path.startswith('/repos/example/private/pulls'):
+                      raise AssertionError('APP_ESCAPED_PR_API')
+                  if role=='reader' and method!='GET': raise AssertionError('READER_WRITE')
+                  url=urlsplit(path);p=url.path;q=parse_qs(url.query)
+                  if p.endswith('/git/ref/heads/control'): return {'object':{'sha':self.control}}
+                  if p.endswith('/git/ref/heads/main'): return {'object':{'sha':self.main}}
+                  if p.endswith('/git/ref/heads/product'): return {'object':{'sha':self.base}}
+                  if p.endswith('/git/ref/heads/work'): return {'object':{'sha':self.candidate}}
+                  if '/contents/' in p:
+                      if q['ref'][0]!=self.control: raise PublicationRefused('STALE_CONTROL')
+                      value=self.policy if p.endswith('roles.json') else self.state
+                      return {'encoding':'base64','content':base64.b64encode(canonical(value).encode()).decode()}
+                  if p.endswith('/issues/comments/11'): return copy.deepcopy(self.authority)
+                  if '/compare/' in p: return {'merge_base_commit':{'sha':'b'*40},'status':'ahead' if self.compare_ahead else 'diverged'}
+                  if '/git/trees/' in p:
+                      return {'truncated':self.truncated,'tree':[] if p.endswith('b'*40) else
+                          [{'path':self.path,'mode':self.mode,'type':'blob','sha':self.blob}]}
+                  if '/git/blobs/' in p: return {'encoding':'base64','content':base64.b64encode(self.blob_raw).decode()}
+                  if path=='/graphql':
+                      assert role=='writer'
+                      args=data['variables']['input'];self.cas_count+=1
+                      if self.cas_count==self.fail_cas_at or args['expectedHeadOid']!=self.control:
+                          return {'errors':[{'message':'fixture conflict'}]}
+                      assert args['branch']=={'repositoryNameWithOwner':'example/private','refName':'control'}
+                      assert len(args['fileChanges']['additions'])==1
+                      self.state=json.loads(base64.b64decode(args['fileChanges']['additions'][0]['contents']))
+                      self.control=hashlib.sha1(canonical(self.state).encode()).hexdigest()
+                      return {'data':{'createCommitOnBranch':{'commit':{'oid':self.control}}}}
+                  if p.endswith('/pulls'):
+                      if method=='GET': return copy.deepcopy(self.prs)
+                      assert role=='app' and method=='POST'
+                      self.creates+=1
+                      if self.reject_post: raise UnknownOutcome('REJECTED')
+                      pr={'number':len(self.prs)+1,'state':'open','body':data['body'],
+                          'user':{'id':999 if self.bad_app else 22},'performed_via_github_app':{'id':21},
+                          'head':{'ref':'work','sha':self.candidate,'repo':{'full_name':'example/private'}},
+                          'base':{'ref':'product','sha':self.base,'repo':{'full_name':'example/private'}}}
+                      self.prs.append(pr)
+                      if self.drift_post:self.main='f'*40
+                      if self.lose_post:raise UnknownOutcome('LOST_RESPONSE_AFTER_COMMIT')
+                      return copy.deepcopy(pr)
+                  if '/pulls/' in p:
+                      pr=self.prs[int(p.rsplit('/',1)[1])-1]
+                      if method=='PATCH':
+                          assert role=='app' and data=={'state':'closed'}
+                          if self.close_fail: raise UnknownOutcome('LOST_CLOSE')
+                          pr['state']='closed'
+                      return copy.deepcopy(pr)
+                  if p.endswith('/dispatches'):
+                      assert role in ('writer','relay') and method=='POST'
+                      return None
+                  raise AssertionError('UNEXPECTED_ENDPOINT')
+          class Verifier:
+              def __init__(self,reader):self.reader=reader
+              def verify(self,snapshot):
+                  if self.reader.head('main')!='1'*40:raise PublicationRefused('MAIN_DRIFT')
+                  if snapshot[1]['activeAuthorization']['status']!='IN_PROGRESS':raise PublicationRefused('REVOKED')
+                  return {'repository':'example/private','authorization_id':'grant-1','candidate_sha':'c'*40,
+                      'base_sha':'b'*40,'work_branch':'work','target_branch':'product','title':'dummy',
+                      'body':'- Authorization: `grant-1`\n- Authorization record: issue #1 comment `11`'}
+              def verify_same(self,snapshot,binding):
+                  if self.reader.head('control')!=snapshot[0] or self.verify(snapshot)!=binding:raise PublicationRefused('DRIFT')
+          
+          class PublicTransportTests(unittest.TestCase):
+              def setUp(self):
+                  self.s=Server();self.reader=Reader(self.s.client('reader'),'example/private')
+                  self.journal=ControlCAS(self.reader,self.s.client('writer'),'control','state.json')
+                  self.prs=PullRequests(self.s.client('app'),'example/private',21,22,{'metadata':'read','pull_requests':'write'})
+              def run_service(self):return PublicationService(Verifier(self.reader),self.journal,self.prs).run()
+              def test_real_transport_request_shapes_and_success(self):
+                  self.run_service()
+                  self.assertEqual(self.s.creates,1)
+                  self.assertEqual(self.s.state['activeAuthorization']['status'],'IN_PROGRESS')
+                  self.assertIsNone(self.s.state['activeAuthorization']['consumedByReceiptCommentId'])
+                  mutations=[x[3] for x in self.s.calls if x[2]=='/graphql']
+                  self.assertEqual(len(mutations),3)
+                  self.assertTrue(all('expectedHeadOid' in x['variables']['input'] for x in mutations))
+              def test_duplicate_event(self):
+                  self.run_service();self.run_service();self.assertEqual(self.s.creates,1)
+              def test_CAS_conflict_no_PR(self):
+                  self.s.fail_cas_at=1
+                  with self.assertRaises(PublicationRefused):self.run_service()
+                  self.assertEqual(self.s.creates,0)
+              def test_response_lost_reconcile_only(self):
+                  self.s.lose_post=True
+                  with self.assertRaises(UnknownOutcome):self.run_service()
+                  self.s.lose_post=False;self.run_service();self.assertEqual(self.s.creates,1)
+              def test_no_PR_after_unknown_outcome_no_retry(self):
+                  self.s.reject_post=True
+                  with self.assertRaises(UnknownOutcome):self.run_service()
+                  self.s.reject_post=False
+                  with self.assertRaises(PublicationRefused):self.run_service()
+                  self.assertEqual(self.s.creates,1)
+              def test_bad_identity_compensation(self):
+                  self.s.bad_app=True
+                  with self.assertRaisesRegex(PublicationRefused,'COMPENSATED'):self.run_service()
+                  self.assertEqual(self.s.prs[0]['state'],'closed')
+              def test_compensation_failure_stop(self):
+                  self.s.bad_app=True;self.s.close_fail=True
+                  with self.assertRaises(UnknownOutcome):self.run_service()
+              def test_control_cannot_consume_product(self):
+                  h,s=self.journal.read();after=copy.deepcopy(s);after['stateVersion']+=1
+                  after['activeAuthorization']['status']='CONSUMED'
+                  with self.assertRaises(PublicationRefused):self.journal.update(h,s,after)
+              def test_excess_app_permissions(self):
+                  for permission in ('contents','actions','administration'):
+                      with self.subTest(permission=permission),self.assertRaises(PublicationRefused):
+                          PullRequests(self.s.client('app'),'example/private',21,22,{'metadata':'read','pull_requests':'write',permission:'read'})
+              def test_revoked_authority(self):
+                  self.s.state['activeAuthorization']['status']='REVOKED'
+                  with self.assertRaises(PublicationRefused):self.run_service()
+                  self.assertEqual(self.s.creates,0)
+              def test_main_drift_after_creation(self):
+                  self.s.drift_post=True
+                  with self.assertRaisesRegex(PublicationRefused,'COMPENSATED'):self.run_service()
+              def test_api_endpoint_escape_denied(self):
+                  class RejectNetwork:
+                      def open(self,*args,**kwargs):raise AssertionError('NETWORK_MUST_NOT_RUN')
+                  client=Http('dummy-not-a-real-credential');client._opener=RejectNetwork()
+                  for path in ('https://example.invalid','//example.invalid','/a\\b'):
+                      with self.subTest(path=path),self.assertRaises(PublicationRefused):client.call('GET',path)
+          
+          result=unittest.TextTestRunner(verbosity=2).run(unittest.defaultTestLoader.loadTestsFromTestCase(PublicTransportTests))
+          if not result.wasSuccessful() or result.skipped:raise SystemExit(1)
+          print('TRANSPORT_IMPLEMENTATION_TESTED; GITHUB_API_SIMULATED; PRIVATE_SOURCE=NONE; LIVE_APP=NONE; SKIPPED=0')
+          
+          PY
