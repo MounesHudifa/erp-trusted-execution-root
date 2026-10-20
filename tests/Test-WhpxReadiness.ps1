@@ -3,16 +3,16 @@ $scriptPath = Join-Path $PSScriptRoot '..\probes\Get-WhpxReadiness.ps1'
 $tokens=$null; $errors=$null
 [Management.Automation.Language.Parser]::ParseFile($scriptPath,[ref]$tokens,[ref]$errors) | Out-Null
 if ($errors.Count) { throw 'PARSE_FAILURE' }
-$script:whpState='Enabled'; $script:dll=$true; $script:queries=@()
+$global:SEC02WhpxTestState='Enabled'; $global:SEC02WhpxTestDll=$true; $global:SEC02WhpxTestQueries=@()
 function global:Get-WindowsOptionalFeature {
     param([switch]$Online,[string]$FeatureName,$ErrorAction)
-    $script:queries += $FeatureName
+    $global:SEC02WhpxTestQueries += $FeatureName
     if ($FeatureName -eq 'VirtualMachinePlatform') { return [pscustomobject]@{State='Enabled'} }
     if ($FeatureName -cne 'HypervisorPlatform') { throw 'UNEXPECTED_QUERY' }
-    if ($script:whpState -eq 'THROW') { throw 'private-path-or-username-must-not-escape' }
-    [pscustomobject]@{State=$script:whpState}
+    if ($global:SEC02WhpxTestState -eq 'THROW') { throw 'private-path-or-username-must-not-escape' }
+    [pscustomobject]@{State=$global:SEC02WhpxTestState}
 }
-function global:Test-Path { param($LiteralPath,$PathType) return $script:dll }
+function global:Test-Path { param($LiteralPath,$PathType) return $global:SEC02WhpxTestDll }
 try {
     $count=0
     foreach ($case in @(
@@ -25,13 +25,13 @@ try {
         @('THROW',$true,'WHP_CAPABILITY_UNPROVEN_STOP'),
         @('unexpected',$true,'WHP_CAPABILITY_UNPROVEN_STOP')
     )) {
-        $script:whpState=$case[0]; $script:dll=$case[1]; $script:queries=@()
+        $global:SEC02WhpxTestState=$case[0]; $global:SEC02WhpxTestDll=$case[1]; $global:SEC02WhpxTestQueries=@()
         $raw = & $scriptPath
         $r = $raw | ConvertFrom-Json
         if ($r.decision -cne $case[2]) { throw 'WRONG_DECISION' }
         if ($r.vmpFeatureState -cne 'Enabled') { throw 'VMP_FIXTURE_FAILED' }
         if ($r.candidateExecutionAllowed -or $r.isolationProven -or $r.whpxExecutionProven -or $r.changesRequested -or $r.rebootAllowed) { throw 'FALSE_AUTHORITY' }
-        if (($script:queries -join ',') -cne 'HypervisorPlatform,VirtualMachinePlatform') { throw 'QUERY_SCOPE' }
+        if (($global:SEC02WhpxTestQueries -join ',') -cne 'HypervisorPlatform,VirtualMachinePlatform') { throw 'QUERY_SCOPE' }
         if ($raw -match 'private-path|username|C:\\|Users') { throw 'PRIVACY_FAILURE' }
         $count++
     }
@@ -39,4 +39,5 @@ try {
 } finally {
     Remove-Item Function:\Get-WindowsOptionalFeature
     Remove-Item Function:\Test-Path
+    Remove-Variable SEC02WhpxTestState,SEC02WhpxTestDll,SEC02WhpxTestQueries -Scope Global
 }
