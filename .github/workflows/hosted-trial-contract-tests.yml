@@ -1,0 +1,28 @@
+name: Bounded Hosted Trial Contract Tests
+on:
+  push:
+    branches: [sec02/controller-isolation-validation]
+    paths:
+      - 'trustroot/hosted_trial.py'
+      - 'tests/test_hosted_trial.py'
+      - '.github/workflows/hosted-trial-contract-tests.yml'
+permissions:
+  contents: read
+jobs:
+  contract-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Test public synthetic definition only, not the private canary
+        run: |
+          python3 -B - <<'PY'
+          import unittest
+          suite=unittest.defaultTestLoader.discover('tests',pattern='test_hosted_trial.py')
+          result=unittest.TextTestRunner(verbosity=2).run(suite)
+          if not result.wasSuccessful() or result.skipped:
+              raise SystemExit('CONTRACT_TEST_FAILURE_OR_SKIP')
+          print('PRIVATE_TRIAL_DISPATCHED=NO; EXECUTION_AUTHORIZED=NO; SKIPPED=0')
+          PY
