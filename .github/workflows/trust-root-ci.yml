@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, sec02/controller-isolation-validation]
     paths-ignore:
+      - 'trustroot/hosted_trial.py'
+      - 'tests/test_hosted_trial.py'
+      - '.github/workflows/hosted-trial-contract-tests.yml'
       - 'probes/Get-WhpxReadiness.ps1'
       - 'tests/Test-WhpxReadiness.ps1'
       - '.github/workflows/whpx-readiness-tests.yml'
