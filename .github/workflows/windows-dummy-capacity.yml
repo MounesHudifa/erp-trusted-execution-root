@@ -11,9 +11,11 @@ jobs:
     timeout-minutes: 10
     permissions: {}
     env:
-      DOTNET_INSTALL_DIR: ${{ runner.temp }}/pinned-dotnet
       DOTNET_CLI_TELEMETRY_OPTOUT: '1'
     steps:
+      - name: Select temporary SDK directory
+        shell: pwsh
+        run: '"DOTNET_INSTALL_DIR=$env:RUNNER_TEMP/pinned-dotnet" | Out-File -FilePath $env:GITHUB_ENV -Append'
       - name: Provision exact SDK
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1
         with:
