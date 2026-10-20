@@ -47,6 +47,7 @@ jobs:
           for i in range(0,len(data),4096): data[i]=1
           h=hashlib.sha256(data).hexdigest()
           c=Counters();c.cb=ctypes.sizeof(c)
+          ctypes.windll.psapi.GetProcessMemoryInfo.argtypes=[wintypes.HANDLE,ctypes.POINTER(Counters),wintypes.DWORD]
           ctypes.windll.kernel32.GetCurrentProcess.restype=wintypes.HANDLE
           if not ctypes.windll.psapi.GetProcessMemoryInfo(ctypes.windll.kernel32.GetCurrentProcess(),ctypes.byref(c),c.cb): raise RuntimeError("MEMORY_MEASURE_FAILED")
           print(json.dumps({"dummyBytes":len(data),"seconds":time.perf_counter()-t,"peakWorkingSetBytes":c.PeakWorkingSetSize,"digest":h}))
