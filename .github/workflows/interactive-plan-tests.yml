@@ -1,0 +1,20 @@
+name: Interactive Plan error regressions
+on:
+  push:
+    branches: [sec02/controller-isolation-validation]
+    paths:
+      - 'probes/Interactive-ReadOnlyPlan.ps1'
+      - 'tests/Test-InteractivePlan.ps1'
+      - '.github/workflows/interactive-plan-tests.yml'
+permissions:
+  contents: read
+jobs:
+  powershell51:
+    runs-on: windows-2025
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - shell: powershell
+        run: ./tests/Test-InteractivePlan.ps1
