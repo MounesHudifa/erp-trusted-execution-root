@@ -4,6 +4,9 @@ on:
   push:
     branches: [sec02/controller-isolation-validation]
     paths-ignore:
+      - 'probes/Get-WhpxReadiness.ps1'
+      - 'tests/Test-WhpxReadiness.ps1'
+      - '.github/workflows/whpx-readiness-tests.yml'
       - 'probes/Interactive-WslInstall.ps1'
       - 'tests/Test-InteractiveWslInstall.ps1'
       - '.github/workflows/interactive-install-tests.yml'
