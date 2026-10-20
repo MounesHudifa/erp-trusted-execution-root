@@ -4,6 +4,9 @@ on:
   push:
     branches: [main, sec02/controller-isolation-validation]
     paths-ignore:
+      - 'probes/Interactive-WslInstall.ps1'
+      - 'tests/Test-InteractiveWslInstall.ps1'
+      - '.github/workflows/interactive-install-tests.yml'
       - 'probes/Wsl2TrialPolicy.ps1'
       - 'probes/Prepare-Wsl2Trial.ps1'
       - 'probes/Get-Wsl2TrialPlan.ps1'
