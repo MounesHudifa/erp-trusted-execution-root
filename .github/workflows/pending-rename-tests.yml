@@ -35,6 +35,17 @@ jobs:
           Write-Output 'STAGE=SIGNATURE_VERIFIED'
           $installer=New-Object -ComObject WindowsInstaller.Installer
           $db=$installer.OpenDatabase($path,0)
+          $tableView=$db.OpenView('SELECT `Name` FROM `_Tables`')
+          $tableView.Execute()
+          $tables=@()
+          while($row=$tableView.Fetch()){$tables+= $row.StringData(1)}
+          $tableView.Close()
+          if($tables -notcontains 'LaunchCondition'){
+            Write-Output 'PUBLIC_MSI_LAUNCH_CONDITION_TABLE=ABSENT'
+            Write-Output 'MSI_OPEN_MODE=READ_ONLY; MSI_INSTALLED=NO; TARGET_DEVICE_ACCESSED=NO'
+            Write-Output 'CUSTOM_ACTION_SAFETY=NOT_PROVEN; INSTALLATION_AUTHORIZED=NO'
+            exit 0
+          }
           $view=$db.OpenView('SELECT `Condition`, `Description` FROM `LaunchCondition`')
           $view.Execute()
           $count=0
