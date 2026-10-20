@@ -1,0 +1,64 @@
+name: Publisher event isolation foundation
+on:
+  pull_request:
+    branches: [main]
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+permissions: {}
+jobs:
+  reject-untrusted-publication:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    steps:
+      - name: Reject publication without independently verified authority
+        env:
+          EVENT_KIND: ${{ github.event_name }}
+          SOURCE_REPOSITORY: ${{ github.repository }}
+          SOURCE_REF: ${{ github.ref }}
+        shell: bash
+        run: |
+          python3 -I -B - <<'PY'
+          import json, os
+          # Diagnostic only, not an attestation. GitHub automatically issues a
+          # restricted job token; absence from env does NOT prove no token exists.
+          # This inline code does not request/use a Publisher credential or token.
+          forbidden = ("GH_TOKEN", "GITHUB_TOKEN", "APP_PRIVATE_KEY",
+                       "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL")
+          if any(os.environ.get(name) for name in forbidden):
+              raise SystemExit("UNEXPECTED_CREDENTIAL_CONTEXT")
+          event = os.environ["EVENT_KIND"]
+          if event not in ("pull_request", "pull_request_target", "workflow_dispatch"):
+              raise SystemExit("UNSUPPORTED_EVENT")
+          reason = ("UNTRUSTED_PR_EVENT" if event in
+                    ("pull_request", "pull_request_target") else
+                    "INDEPENDENT_OFFICIAL_AUTHORITY_ABSENT")
+          result = {"event": event, "decision": "DENY", "reason": reason,
+                    "publisher_started": False,
+                    "github_token_automatically_issued": True,
+                    "github_token_used_by_test_code": False,
+                    "publisher_credential_requested_by_test": False,
+                    "publisher_credential_used_by_test": False,
+                    "candidate_workflow_executed": event == "pull_request",
+                    "independent_attestation": False,
+                    "activation_proven": False}
+          print(json.dumps(result, sort_keys=True))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("Publication request rejected: " + reason + "\n")
+          PY
+  forbidden-pr-environment-probe:
+    # Deliberate server-side rejection test. A red run is expected for this job;
+    # zero executed steps AND GitHub's environment rejection annotation are
+    # required evidence. A skipped job is NOT counted as a passing test.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    permissions: {}
+    environment: trusted-product-publisher
+    steps:
+      - name: Fail if GitHub admits an untrusted PR to the environment
+        run: |
+          echo "ENVIRONMENT_BOUNDARY_BREACH_NO_SECRETS_REQUESTED"
+          exit 1
