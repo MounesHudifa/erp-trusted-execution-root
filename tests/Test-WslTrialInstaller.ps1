@@ -6,7 +6,7 @@ try {
  foreach($case in @('zero','reboot','failure','unexpected','hash','signature','download','missing-authority','existing-receipt','rollback')){
   $dir=Join-Path $base $case;New-Item -ItemType Directory $dir|Out-Null
   Copy-Item "$PSScriptRoot/../probes/Prepare-Wsl2Trial.ps1","$PSScriptRoot/../probes/Wsl2TrialPolicy.ps1" $dir
-  $plan=[ordered]@{host=$env:COMPUTERNAME;vmpState='Enabled';allUserAppxInventoryKnown=$true;appxVersions=@();msiVersions=@();currentUserDistributions=@();currentUserWslConfigExists=$false;pendingRebootIndicators=@('PendingFileRenameOperations');installBlockReasons=@()}
+  $plan=[ordered]@{host=$env:COMPUTERNAME;vmpState='Enabled';allUserAppxInventoryKnown=$true;msiInventoryKnown=$true;appxVersions=@();msiVersions=@();currentUserDistributions=@();currentUserWslConfigExists=$false;pendingRebootIndicators=@('PendingFileRenameOperations');installBlockReasons=@()}
   $plan|ConvertTo-Json|Set-Content (Join-Path $dir 'fixture-plan.json')
   'param($ExpectedComputerName); Get-Content (Join-Path $PSScriptRoot "fixture-plan.json") -Raw'|Set-Content (Join-Path $dir 'Get-Wsl2TrialPlan.ps1')
   $a=[ordered]@{status='OWNER_AUTHORIZED_SINGLE_INSTALL';host=$env:COMPUTERNAME;scriptSha256=(Get-FileHash (Join-Path $dir 'Prepare-Wsl2Trial.ps1')).Hash.ToLowerInvariant();policySha256=(Get-FileHash (Join-Path $dir 'Wsl2TrialPolicy.ps1')).Hash.ToLowerInvariant();planSha256=(Get-FileHash (Join-Path $dir 'Get-Wsl2TrialPlan.ps1')).Hash.ToLowerInvariant();packageSha256='ae977286974255bd26bf925f00f40f5692c6b2084155cbc0563c09aea091f211';controlSha=('b'*40);ownerDecisionReference='https://github.com/example/synthetic/issues/1#issuecomment-1';maxInstallAttempts=1;allowPendingRenameRisk=$true;allowReboot=$false;allowLinuxExecution=$false;allowRollback=$false}
@@ -81,3 +81,6 @@ exit $LASTEXITCODE
 } finally {Remove-Item Env:TRIAL_CASE -ErrorAction SilentlyContinue;Remove-Item -LiteralPath $base -Recurse -Force}
 Write-Output "WSL_TRIAL_INSTALLER_ASSERTIONS_PASS=$count"
 Write-Output 'REAL_MSI_EXECUTIONS=0; REAL_WSL_EXECUTIONS=0; TARGET_DEVICE_ACCESSED=NO'
+# Expected negative child exit codes must not become the suite's exit code.
+# Any failed assertion above terminates before reaching this success return.
+exit 0

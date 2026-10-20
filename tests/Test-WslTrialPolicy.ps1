@@ -8,13 +8,16 @@ function Reject([scriptblock]$code,[string]$expected){
  Assert $caught $expected
 }
 function Plan {
- [pscustomobject]@{host='synthetic-host';vmpState='Enabled';allUserAppxInventoryKnown=$true;appxVersions=@();msiVersions=@();currentUserDistributions=@();currentUserWslConfigExists=$false;pendingRebootIndicators=@('PendingFileRenameOperations');installBlockReasons=@('PENDING_REBOOT_PRESERVE_STOP')}
+ [pscustomobject]@{host='synthetic-host';vmpState='Enabled';allUserAppxInventoryKnown=$true;msiInventoryKnown=$true;appxVersions=@();msiVersions=@();currentUserDistributions=@();currentUserWslConfigExists=$false;pendingRebootIndicators=@('PendingFileRenameOperations');installBlockReasons=@('PENDING_REBOOT_PRESERVE_STOP')}
 }
 $p=Plan;Assert-WslTrialPreconditions $p 'synthetic-host';Assert $true 'reviewed-marker-eligible-not-authorized'
 Reject {Assert-WslTrialAuthorityBinding $null 'synthetic-host' ('a'*64)} 'INDEPENDENT_LOCAL_AUTHORITY_REQUIRED'
 $p=Plan;Reject {Assert-WslTrialPreconditions $p 'wrong-host'} 'HOST_IDENTITY_MISMATCH'
 foreach($state in @('Disabled','UNKNOWN','EnablePending')){$p=Plan;$p.vmpState=$state;Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'VMP_NOT_ALREADY_ENABLED_NO_PARTIAL_CHANGE'}
 $p=Plan;$p.allUserAppxInventoryKnown=$false;Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'ALL_USER_RUNTIME_INVENTORY_UNKNOWN'
+$p=Plan;$p.msiInventoryKnown=$false;Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'MSI_INVENTORY_UNKNOWN'
+$p=Plan;$p.PSObject.Properties.Remove('msiInventoryKnown');Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'MSI_INVENTORY_UNKNOWN'
+$p=Plan;$p.allUserAppxInventoryKnown='true';Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'ALL_USER_RUNTIME_INVENTORY_UNKNOWN'
 foreach($field in @('appxVersions','msiVersions','currentUserDistributions')){$p=Plan;$p.$field=@('existing');Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'EXISTING_COMPONENTS_PRESERVE_STOP'}
 $p=Plan;$p.currentUserWslConfigExists=$true;Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'EXISTING_COMPONENTS_PRESERVE_STOP'
 foreach($indicator in @('RebootPending','RebootRequired','UNKNOWN')){$p=Plan;$p.pendingRebootIndicators+= $indicator;Reject {Assert-WslTrialPreconditions $p 'synthetic-host'} 'OTHER_REBOOT_INDICATOR_PRESERVE_STOP'}

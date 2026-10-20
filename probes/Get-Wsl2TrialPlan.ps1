@@ -12,10 +12,14 @@ $appxKnown = $false
 $apps = @()
 try { $apps = @(Get-AppxPackage -AllUsers -Name MicrosoftCorporationII.WindowsSubsystemForLinux); $appxKnown = $true } catch {}
 $packages = @()
+$msiKnown = $true
 foreach ($key in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
-    $packages += @(Get-ItemProperty $key -ErrorAction SilentlyContinue | Where-Object {
+    try {
+    if (-not (Test-Path ($key.Substring(0,$key.Length-2)) -ErrorAction Stop)) { continue }
+    $packages += @(Get-ItemProperty $key -ErrorAction Stop | Where-Object {
         $_.PSObject.Properties['DisplayName'] -and $_.DisplayName -match 'Windows Subsystem for Linux'
     })
+    } catch { $msiKnown = $false }
 }
 $distroKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss'
 $distros = @()
@@ -38,6 +42,7 @@ $reasons = @()
 if ($featureState -ne 'Enabled') { $reasons += 'VMP_NOT_ALREADY_ENABLED_NO_FEATURE_CHANGE_ALLOWED' }
 if (@($pending | Where-Object { $_ -cne 'PendingFileRenameOperations' }).Count) { $reasons += 'PENDING_REBOOT_PRESERVE_STOP' }
 if (-not $appxKnown) { $reasons += 'ALL_USER_RUNTIME_INVENTORY_UNKNOWN' }
+if (-not $msiKnown) { $reasons += 'MSI_INVENTORY_UNKNOWN' }
 if ($apps.Count -or $packages.Count) { $reasons += 'EXISTING_RUNTIME_PRESERVE_REBASELINE' }
 if ($distros.Count) { $reasons += 'EXISTING_DISTRIBUTIONS_PRESERVE_STOP' }
 if (Test-Path $config) { $reasons += 'EXISTING_CONFIGURATION_PRESERVE_STOP' }
@@ -45,6 +50,7 @@ if (Test-Path (Join-Path $env:ProgramData 'TrustedExecution-WslTrial')) { $reaso
 [ordered]@{
     host=$ExpectedComputerName;mode='READ_ONLY_PLAN';vmpState=$featureState
     allUserAppxInventoryKnown=$appxKnown
+    msiInventoryKnown=$msiKnown
     appxVersions=@($apps | ForEach-Object { [string]$_.Version })
     msiVersions=@($packages | ForEach-Object { [string]$_.DisplayVersion })
     currentUserDistributions=$distros;otherUserDistributionInventory='NOT_READ'

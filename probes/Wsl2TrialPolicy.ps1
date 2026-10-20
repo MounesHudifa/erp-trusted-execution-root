@@ -4,7 +4,8 @@ function Assert-WslTrialPreconditions {
  param($Plan,[string]$ExpectedHost)
  if(-not $Plan -or $Plan.host -cne $ExpectedHost){throw 'HOST_IDENTITY_MISMATCH'}
  if($Plan.vmpState -ne 'Enabled'){throw 'VMP_NOT_ALREADY_ENABLED_NO_PARTIAL_CHANGE'}
- if($Plan.allUserAppxInventoryKnown -ne $true){throw 'ALL_USER_RUNTIME_INVENTORY_UNKNOWN'}
+ if($Plan.allUserAppxInventoryKnown -isnot [bool] -or $Plan.allUserAppxInventoryKnown -ne $true){throw 'ALL_USER_RUNTIME_INVENTORY_UNKNOWN'}
+ if(-not $Plan.PSObject.Properties['msiInventoryKnown'] -or $Plan.msiInventoryKnown -isnot [bool] -or $Plan.msiInventoryKnown -ne $true){throw 'MSI_INVENTORY_UNKNOWN'}
  foreach($name in @('appxVersions','msiVersions','currentUserDistributions','pendingRebootIndicators','installBlockReasons')){
   if(-not $Plan.PSObject.Properties[$name] -or $null -eq $Plan.$name){throw 'INCOMPLETE_PLAN'}
  }
