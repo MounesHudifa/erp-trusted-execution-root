@@ -527,12 +527,14 @@ jobs:
           
           class PullRequests:
               """PR-only App credential. No Contents, Actions, Administration or generic API escape."""
-              def __init__(self, http, repository, app_id, bot_id, token_grants):
+              def __init__(self, http, repository, app_id, bot_id, token_grants, legacy_numbers=()):
                   if token_grants != {'pull_requests':'write','metadata':'read'}:
                       raise PublicationRefused('APP_GRANT_EXCESS_OR_MISSING')
                   if type(app_id) is not int or app_id<=0 or type(bot_id) is not int or bot_id<=0:
                       raise PublicationRefused('APP_IDENTITY_UNPINNED')
                   self._http, self.repository, self.app_id, self.bot_id = http,repository,app_id,bot_id
+                  if any(type(n) is not int or n<=0 for n in legacy_numbers): raise PublicationRefused('LEGACY_PR_SCOPE')
+                  self.legacy_numbers=frozenset(legacy_numbers)
                   self.root='/repos/'+repository+'/pulls'
           
               def discover(self, binding):
@@ -573,6 +575,8 @@ jobs:
                   for prefix in ('- Authorization: ', '- Authorization record: '):
                       if [x for x in lines if x.startswith(prefix)] != [x for x in binding['body'].splitlines() if x.startswith(prefix)]:
                           raise PublicationRefused('PR_AUTHORITY_MARKERS')
+                  if not require_app and pr.get('number') not in self.legacy_numbers:
+                      raise PublicationRefused('LEGACY_PR_NOT_EXTERNALLY_ADOPTED')
                   if require_app and (pr.get('user',{}).get('id')!=self.bot_id or
                           pr.get('performed_via_github_app',{}).get('id')!=self.app_id):
                       raise PublicationRefused('PR_APP_IDENTITY')
@@ -600,7 +604,7 @@ jobs:
                   if len(matches)>1: raise PublicationRefused('PR_AMBIGUOUS')
                   if matches:
                       pr=matches[0]
-                      self.prs.verify(pr,binding,require_app=existing is not None and existing.get("origin")!="EXISTING_AUTHORIZED_PR")
+                      self.prs.verify(pr,binding,require_app=pr.get('number') not in self.prs.legacy_numbers)
                       self.verifier.verify_same(snapshot,binding)
                       if existing is None:
                           rec={'status':'PUBLISHED','binding_digest':fingerprint,'binding':binding,
