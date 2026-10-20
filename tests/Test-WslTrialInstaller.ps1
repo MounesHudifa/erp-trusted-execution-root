@@ -13,6 +13,9 @@ try {
   $a|ConvertTo-Json|Set-Content (Join-Path $dir 'synthetic-authority.json')
   $child=@'
 $ErrorActionPreference='Stop'
+# Get-FileHash is an exported module function. Load it BEFORE installing the
+# adapter so later module auto-loading cannot replace our synthetic adapter.
+Import-Module Microsoft.PowerShell.Utility
 $env:ProgramData=Join-Path $PSScriptRoot 'synthetic-programdata'
 New-Item -ItemType Directory $env:ProgramData|Out-Null
 function global:curl.exe {
