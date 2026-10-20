@@ -3,6 +3,10 @@ name: Trust Root Unit and Adversarial Tests
 on:
   push:
     branches: [main, sec02/controller-isolation-validation]
+    paths-ignore:
+      - 'probes/Interactive-ReadOnlyPlan.ps1'
+      - 'tests/Test-InteractivePlan.ps1'
+      - '.github/workflows/interactive-plan-tests.yml'
   pull_request:
     branches: [main]
   workflow_dispatch:

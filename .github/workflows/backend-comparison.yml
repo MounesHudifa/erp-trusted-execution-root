@@ -3,6 +3,10 @@ name: Public Backend Comparison - Real Guests
 on:
   push:
     branches: [sec02/controller-isolation-validation]
+    paths-ignore:
+      - 'probes/Interactive-ReadOnlyPlan.ps1'
+      - 'tests/Test-InteractivePlan.ps1'
+      - '.github/workflows/interactive-plan-tests.yml'
   workflow_dispatch:
 
 permissions:
