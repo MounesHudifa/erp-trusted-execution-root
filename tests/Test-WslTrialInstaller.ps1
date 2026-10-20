@@ -58,7 +58,11 @@ $auth=if($env:TRIAL_CASE -eq 'missing-authority'){''}else{Join-Path $PSScriptRoo
   if($code -ne $expected){$output|Write-Output;throw "EXIT_MISMATCH:$case"};$count++
   $attempts=Join-Path $dir 'attempts.txt'
   $shouldAttempt=$case -in @('zero','reboot','failure','unexpected')
-  if((Test-Path $attempts) -ne $shouldAttempt){throw "ATTEMPT_MISMATCH:$case"};$count++
+  if((Test-Path $attempts) -ne $shouldAttempt){
+   $output|Write-Output
+   Get-ChildItem -LiteralPath $dir -Recurse -File|ForEach-Object {Write-Output ('SYNTHETIC_TEST_FILE='+$_.FullName)}
+   throw "ATTEMPT_MISMATCH:$case"
+  };$count++
   if($shouldAttempt -and @(Get-Content $attempts).Count -ne 1){throw 'RETRY_DETECTED'}
   $receipt=Join-Path $dir 'synthetic-programdata/TrustedExecution-WslTrial/installation-receipt.json'
   if(Test-Path $receipt){
